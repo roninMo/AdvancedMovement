@@ -1,0 +1,2168 @@
+
+
+
+#include "AdvancedMovementComponent.h"
+#include "GameFramework/Character.h"
+#include "Components/CapsuleComponent.h"
+#include "Net/UnrealNetwork.h"
+
+#include "GameplayTagContainer.h"
+#include "Kismet/KismetMathLibrary.h"
+#include "Kismet/KismetSystemLibrary.h"
+#include "Logging/StructuredLog.h"
+
+
+namespace CharacterMovementConstants // @ref 5.4
+{
+	// MAGIC NUMBERS
+	const float MAX_STEP_SIDE_Z = 0.08f;	// maximum z value for the normal on the vertical side of steps
+	const float VERTICAL_SLOPE_NORMAL_Z = 0.001f; // Slope is vertical if Abs(Normal.Z) <= this threshold. Accounts for precision problems that sometimes angle normals slightly off horizontal for vertical surface.
+}
+
+
+UAdvancedMovementComponent::UAdvancedMovementComponent()
+{
+	SetNetworkMoveDataContainer(CustomMoveDataContainer);
+	
+	// Movement
+	SprintSpeedMultiplier = 2.0;
+	CrouchSprintSpeedMultiplier = 2.0;
+	AimSpeedMultiplier = 1.0;
+	WalkSpeedMultiplier = 0.74;
+	SlideSpeedLimit = 9000.0;
+	
+	// // CharacterMovement (General Settings)
+	MaxAcceleration = 1200; // Derived from the Acceleration values 
+	BrakingFrictionFactor = 2;
+	BrakingFriction = 2.5;
+	bUseSeparateBrakingFriction = true;
+	Mass = 100;
+	DefaultLandMovementMode = EMovementMode::MOVE_Walking;
+	DefaultWaterMovementMode = EMovementMode::MOVE_Swimming;
+	
+	// Character Movement: Walking
+	MaxStepHeight = 45;
+	SetWalkableFloorAngle(46.35);
+	SetWalkableFloorZ(0.690251);
+	GroundFriction = 11.0;
+	MaxWalkSpeed = 340;
+	MaxWalkSpeedCrouched = 200;
+	MinAnalogWalkSpeed = 0;
+	BrakingDecelerationWalking = 200;
+	bSweepWhileNavWalking = true;
+	bCanWalkOffLedges = true;
+	bCanWalkOffLedgesWhenCrouching = false;
+	bMaintainHorizontalGroundVelocity = false; 
+	bIgnoreBaseRotation = false;
+	PerchRadiusThreshold = 0;
+	PerchAdditionalHeight = 40;
+	LedgeCheckThreshold = 4;
+	bAlwaysCheckFloor = false;
+	bUseFlatBaseForFloorChecks = false;
+	
+	// Character Movement: Jumping/Falling
+	GravityScale = 2.3;
+	BrakingDecelerationFalling = 340;
+	AirControl = 1.0; // this eases the slow down but doesn't necessarily prevent it
+	AirControlBoostMultiplier = 1;
+	AirControlBoostVelocityThreshold = 1;
+	FallingLateralFriction = 0;
+	JumpZVelocity = 740;
+	JumpOffJumpZFactor = 0.5;
+	bImpartBaseVelocityX = true;
+	bImpartBaseVelocityY = true;
+	bImpartBaseVelocityZ = true;
+	bImpartBaseAngularVelocity = true;
+	bNotifyApex = false;
+	bApplyGravityWhileJumping = true;
+	
+	// Character Movement (Networking)
+	NetworkSmoothingMode = ENetworkSmoothingMode::Exponential;
+	bNetworkSkipProxyPredictionOnNetUpdate = false;
+	NetworkMaxSmoothUpdateDistance = 256;
+	NetworkNoSmoothUpdateDistance = 384;
+	NetworkMinTimeBetweenClientAckGoodMoves = 0.1;
+	NetworkMinTimeBetweenClientAdjustments = 0.1;
+	NetworkMinTimeBetweenClientAdjustmentsLargeCorrection = 0.05;
+	NetworkLargeClientCorrectionDistance = 15;
+	bNetworkAlwaysReplicateTransformUpdateTimestamp = false;
+	NetworkSimulatedSmoothLocationTime = 0.1;
+	NetworkSimulatedSmoothRotationTime = 0.05;
+	ListenServerNetworkSimulatedSmoothLocationTime = 0.04;
+	ListenServerNetworkSimulatedSmoothRotationTime = 0.033;
+	NetProxyShrinkRadius = 0.01;
+	NetProxyShrinkHalfHeight = 0.01;	
+	
+	// Movement Capabilities
+	NavAgentProps.AgentHeight = 48; 
+	NavAgentProps.AgentRadius = 192;
+	NavAgentProps.AgentStepHeight = -1;
+	NavAgentProps.NavWalkingSearchHeightScale = 0.5;
+	NavAgentProps.bCanCrouch = true;
+	NavAgentProps.bCanJump = true;
+	NavAgentProps.bCanWalk = true;
+	NavAgentProps.bCanSwim = true;
+	NavAgentProps.bCanFly = false;
+	
+	// Movement Component
+	bUpdateOnlyIfRendered = false;
+	bAutoUpdateTickRegistration = true;
+	bTickBeforeOwner = true;
+	bAutoRegisterUpdatedComponent = true;
+	bAutoRegisterPhysicsVolumeUpdates = true;
+	bComponentShouldUpdatePhysicsVolume = true;
+
+	// Root motion
+	bAllowPhysicsRotationDuringAnimRootMotion = true;
+}
+
+
+void UAdvancedMovementComponent::InitializeComponent()
+{
+	Super::InitializeComponent();
+}
+
+
+
+
+//------------------------------------------------------------------------------//
+// General Movement Logic														//
+//------------------------------------------------------------------------------//
+float UAdvancedMovementComponent::GetMaxSpeed() const
+{
+	// Player input based movement logic
+	if (IsMovingOnGround())
+	{
+		if (SprintPressed) return GetMaxSpeed() * SprintSpeedMultiplier;
+		if (AimPressed) return MaxWalkSpeed * AimSpeedMultiplier;
+		// if (Character->bWalking) return MaxWalkSpeed * WalkSpeedMultiplier;
+		if (IsSliding()) return SlideSpeedLimit; // TODO: Investigate crouching logic and it's behavior during air movement, and perhaps refactor this into the normal walking movement logic with physics adjustments similar to air strafe lurches
+		if (IsCrouching())
+		{
+			if (SprintPressed) return MaxWalkSpeedCrouched * CrouchSprintSpeedMultiplier;
+			else return MaxWalkSpeedCrouched;
+		}
+	}
+	
+	return Super::GetMaxSpeed();
+}
+
+
+
+#pragma region Conditional Checks
+bool UAdvancedMovementComponent::IsCustomMovementMode(ECustomMovementMode InCustomMovementMode) const { return MovementMode == MOVE_Custom && CustomMovementMode == InCustomMovementMode; }
+bool UAdvancedMovementComponent::IsMovingOnGround() const { return ((MovementMode == MOVE_Walking) || (MovementMode == MOVE_NavWalking) || IsSliding()) && UpdatedComponent; }
+bool UAdvancedMovementComponent::IsMantling() const { return MovementMode == MOVE_Custom_Vault; }
+bool UAdvancedMovementComponent::IsSliding() const { return MovementMode == MOVE_Custom && CustomMovementMode == MOVE_Custom_Slide; }
+bool UAdvancedMovementComponent::IsRunning() const { return MovementMode == MOVE_Walking && SprintPressed; }
+bool UAdvancedMovementComponent::IsAiming() const { return AimPressed; }
+bool UAdvancedMovementComponent::IsStrafeSwaying() { return AirStrafeSwayPhysics; }
+#pragma endregion 
+
+
+
+
+//------------------------------------------------------------------------------//
+// Update Movement Mode Logic													//
+//------------------------------------------------------------------------------//
+#pragma region Update Movement Mode
+void UAdvancedMovementComponent::UpdateCharacterStateBeforeMovement(const float DeltaSeconds)
+{
+	Super::UpdateCharacterStateBeforeMovement(DeltaSeconds);
+
+	// TODO: Fix this, input actions do not update values if you don't enter a value, but this is already handled when they convert input into acceleration before sending it to the server
+	if (Acceleration.Equals(FVector::ZeroVector, 0.01)) Input = FVector::ZeroVector;
+	
+	// Slide
+	if (IsCrouching() && !IsSliding() && CanSlide())
+	{
+		SetMovementMode(MOVE_Custom, MOVE_Custom_Slide);
+	}
+
+	// UE_LOGFMT(LogTemp, Log, "{0}: Acceleration=({1}) Velocity=({2})", *GetNameSafe(BaseCharacter), *Acceleration.ToString(), *Velocity.ToString());
+	// UE_LOGFMT(LogTemp, Log, "sprinting: {0}, sliding: {1}, aiming: {2}, mantling: {3}, jumping: {4}", Sprinting ? "true" : "false", Sliding ? "true" : "false", Aiming ? "true" : "false", Mantling ? "true" : "false", BaseCharacter->bPressedJump ? "true" : "false");
+	// UE_LOGFMT(LogTemp, Log, "Acceleration: ({0}), Input: ({1})", *Acceleration.GetSafeNormal().ToString(), *Input.ToString());
+	if (bDebugNetworkReplication)
+	{
+		UE_LOG(LogTemp, Log, TEXT("%s:: wallJumpPressed: %i, AirStrafeSwayPhysics: %i, PreventAirStrafing: %i, Aiming: %i, Sprinting: %i, Mantling: %i"),
+			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"), WallJumpPressed, AirStrafeSwayPhysics, PreventAirStrafing, AimPressed, SprintPressed, Mantling
+		);
+	}
+}
+
+
+void UAdvancedMovementComponent::OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode)
+{
+	Super::OnMovementModeChanged(PreviousMovementMode, PreviousCustomMode);
+	if (bDebugMovementMode)
+	{
+		UE_LOGFMT(LogTemp, Warning, "{0}: Movement Mode Updated: {1}, previous movement mode: {2}",
+			*GetNameSafe(CharacterOwner),
+			*UEnum::GetValueAsString(MovementMode), 
+			*UEnum::GetValueAsString(PreviousMovementMode)
+		);
+	}
+	
+	// Handle exiting previous modes
+	if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_Vault) ExitVault();
+	if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_Slide) ExitSlide();
+	ResetWallJumpInformation(PreviousMovementMode, PreviousCustomMode);
+
+	// Handle entering new modes
+	if (IsCustomMovementMode(MOVE_Custom_Vault)) StartVault(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
+	if (IsCustomMovementMode(MOVE_Custom_Slide)) EnterSlide(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
+
+	// State information
+	HandleInAirLogic();
+
+	// Update player state
+	// if (CharacterOwner && CharacterOwner->GetLocalRole() == ROLE_Authority)
+	// {
+	//		UpdateExternalMovementModeInformation(CharacterOwner->AnimMovementMode, CharacterOwner->AnimCustomMovementMode);
+	// }
+}
+
+
+void UAdvancedMovementComponent::OnMovementUpdated(float DeltaSeconds, const FVector& OldLocation, const FVector& OldVelocity)
+{
+	Super::OnMovementUpdated(DeltaSeconds, OldLocation, OldVelocity);
+}
+#pragma endregion 
+
+
+
+
+//------------------------------------------------------------------------------//
+// Physics Functions															//
+//------------------------------------------------------------------------------//
+void UAdvancedMovementComponent::StartNewPhysics(float deltaTime, int32 Iterations)
+{
+	Super::StartNewPhysics(deltaTime, Iterations);
+}
+
+
+void UAdvancedMovementComponent::PhysWalking(float deltaTime, int32 Iterations)
+{
+	CSV_SCOPED_TIMING_STAT_EXCLUSIVE(CharPhysWalking);
+
+	if (deltaTime < MIN_TICK_TIME)
+	{
+		return;
+	}
+
+	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	{
+		Acceleration = FVector::ZeroVector;
+		Velocity = FVector::ZeroVector;
+		return;
+	}
+
+	if (!UpdatedComponent->IsQueryCollisionEnabled())
+	{
+		SetMovementMode(MOVE_Walking);
+		return;
+	}
+
+	GroundMovementPhysics(deltaTime, Iterations);
+}
+
+
+void UAdvancedMovementComponent::PhysSlide(float deltaTime, int32 Iterations)
+{
+	if (deltaTime < MIN_TICK_TIME)
+	{
+		return;
+	}
+
+	if (!CanSlide())
+	{
+		SetMovementMode(MOVE_Walking);
+		StartNewPhysics(deltaTime, Iterations);
+		return;
+	}
+
+	GroundMovementPhysics(deltaTime, Iterations);
+}
+
+
+void UAdvancedMovementComponent::PhysCustom(float deltaTime, int32 Iterations)
+{
+	Super::PhysCustom(deltaTime, Iterations);
+
+	if (CustomMovementMode == MOVE_Custom_Slide) PhysSlide(deltaTime, Iterations);
+	if (CustomMovementMode == MOVE_Custom_Vault) PhysVault(deltaTime, Iterations);
+}
+
+
+// TODO: Refactor this for smooth movement out of ledge climbing and strafe movement
+void UAdvancedMovementComponent::PhysFalling(float deltaTime, int32 Iterations)
+{
+	if (deltaTime < MIN_TICK_TIME)
+	{
+		return;
+	}
+	
+	// Setup physics sub steps
+	float remainingTime = deltaTime;
+	while( (remainingTime >= MIN_TICK_TIME) && (Iterations < MaxSimulationIterations) )
+	{
+		Iterations++;
+		float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
+		remainingTime -= timeTick;
+
+		// save the current values
+		const FVector OldLocation = UpdatedComponent->GetComponentLocation();
+		const FQuat PawnRotation = UpdatedComponent->GetComponentQuat();
+		FVector Adjusted;
+		bJustTeleported = false;
+
+		const FVector OldVelocityWithRootMotion = Velocity;
+		RestorePreAdditiveRootMotionVelocity();
+		const FVector OldVelocity = Velocity;
+		
+		// Compute current gravity
+		FVector Gravity = FVector(0.f, 0.f, GetGravityZ());
+		float GravityTime = timeTick;
+
+		
+		HandleFallingFunctionality(
+			deltaTime,
+			timeTick,
+			Iterations,
+			remainingTime,
+			OldVelocity,
+			OldVelocityWithRootMotion,
+			Adjusted,
+			Gravity,
+			GravityTime
+		);
+
+		FallingMovementPhysics(
+			deltaTime,
+			timeTick,
+			Iterations,
+			remainingTime,
+			OldLocation,
+			OldVelocity,
+			PawnRotation,
+			Adjusted,
+			true, // bHasLimitedAirControl,
+			Gravity,
+			GravityTime
+		);
+	}
+}
+
+
+// TODO: Refactor this
+void UAdvancedMovementComponent::PhysVault(float deltaTime, int32 Iterations)
+{
+	if (deltaTime < MIN_TICK_TIME)
+	{
+		return;
+	}
+
+	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	{
+		Acceleration = FVector::ZeroVector;
+		Velocity = FVector::ZeroVector;
+		return;
+	}
+
+	if (!Mantling || !MantleInformation.Contains(MantleType))
+	{
+		Acceleration = FVector::ZeroVector;
+		Velocity = FVector::ZeroVector;
+		return;
+	}
+	
+	// Setup physics sub steps
+	float remainingTime = deltaTime;
+	while( (remainingTime >= MIN_TICK_TIME) && (Iterations < MaxSimulationIterations) )
+	{
+		Iterations++;
+		float CurrentTime = GetWorld()->GetTimeSeconds() - VaultStartTime;
+		const float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
+		remainingTime -= timeTick;
+
+		// save the current values
+		const FVector OldLocation = UpdatedComponent->GetComponentLocation();
+		const FQuat CharacterRotation = UpdatedComponent->GetComponentQuat();
+		FVector Adjusted = FVector::ZeroVector;
+		RestorePreAdditiveRootMotionVelocity();
+		
+		
+		// Move the character to the target location
+		FVector Dist = TargetMantleLocation - OldLocation;
+		const float DeltaM = Dist.Size();
+		F_VaultInformation Information = GetMantleInformation(MantleType);
+		float CurrentSpeed = FMath::Clamp(Information.Curve->GetFloatValue(CurrentTime), 0, 1);
+		float Speed = DeltaM * CurrentSpeed * Information.InterpSpeed;
+
+		// Calculations
+		FVector DeltaN = (Dist / DeltaM) * deltaTime;
+		Adjusted = Dist.GetSafeNormal() * Speed;
+		
+		
+		FHitResult Hit;
+		Velocity = Adjusted;
+		SafeMoveUpdatedComponent(Velocity, CharacterRotation, false, Hit);
+		if (UpdatedComponent->GetComponentLocation().Equals(TargetMantleLocation, 1))
+		{
+			SetMovementMode(MOVE_Walking);
+			return;
+		}
+
+		if (bDebugVault)
+		{
+			UE_LOGFMT(LogTemp, Log, "DeltaN: ({0}), CurrentSpeed: ({1}), CurveValue: ({2}), Multiplier: ({3}), Speed: ({4}), Adjusted: ({5})",
+				*DeltaN.ToString(),
+				CurrentSpeed,
+				Information.Curve->GetFloatValue(CurrentTime),
+				Information.InterpSpeed,
+				Speed,
+				*Adjusted.ToString()
+			);
+		}
+	}
+}
+
+
+void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration)
+{
+	const float BaseSpeed = Velocity.Size2D();
+	FRotator MovementRotation(0, UpdatedComponent->GetComponentRotation().Yaw, 0);
+	FVector OldVelocity = Velocity;
+
+	FVector AccelDir = Acceleration.GetSafeNormal();
+	// FVector AccelDir;
+	
+	
+	//--------------------------------------------------------------------------------------------------------------//
+	// Sliding																										//
+	//--------------------------------------------------------------------------------------------------------------//
+	if (IsSliding())
+	{
+		// Only Allow side strafing and prevent velocity being added during a strafe
+		Acceleration = FVector(UKismetMathLibrary::GetRightVector(MovementRotation) * Input.Y).GetSafeNormal() * Acceleration.Size2D();
+		
+		// Find strafe
+		AccelDir = (UKismetMathLibrary::GetRightVector(MovementRotation) * Input.Y).GetSafeNormal(); // Allow sideways movements, however don't add to the velocity
+		const float ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
+		const float AirSpeedCap = (GetMaxAcceleration() / 100) * StrafeSwaySpeedGainMultiplier; // Strafe sway should have more control without slowing down the character's momentum
+
+		// Friction affects our ability to change direction. This is only done for input acceleration, not path following.
+		const FVector AccelerationDir = Acceleration.GetSafeNormal();
+		const float VelSize = Velocity.Size();
+		Velocity = Velocity - (Velocity - AccelerationDir * VelSize) * FMath::Min(DeltaTime * Friction, 1.f);
+
+		const float AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
+		if (AddSpeed > 0.0f)
+		{
+			FVector RedirectedVelocity = Acceleration * SlidingRotationRate * DeltaTime;
+			RedirectedVelocity = RedirectedVelocity.GetClampedToMaxSize2D(AddSpeed);
+
+			Velocity += RedirectedVelocity;
+		}
+
+		// If strafing added extra speed while turning, add friction to slow us down
+		if (Velocity.Size2D() > OldVelocity.Size2D())
+		{
+			Velocity = Velocity.GetSafeNormal2D() * OldVelocity.Size2D();
+			ApplyVelocityBraking(DeltaTime, SlideBrakingFriction, BrakingDeceleration);
+		}
+		
+		return;
+	}
+
+	
+	//--------------------------------------------------------------------------------------------------------------//
+	// All movement modes except for air																			//
+	//--------------------------------------------------------------------------------------------------------------//
+	if (MovementMode != MOVE_Falling) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
+
+	// Strafing calculations causes problems if the character's movement isn't oriented to their movement
+	if (PreventAirStrafing) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
+
+
+	
+	//--------------------------------------------------------------------------------------------------------------------------------------//
+	// Air Strafing																															//
+	//--------------------------------------------------------------------------------------------------------------------------------------//
+	// Do not update velocity when using root motion or when SimulatedProxy and not simulating root motion - SimulatedProxy are repped their Velocity
+	if (!HasValidData() || HasAnimRootMotion() || DeltaTime < MIN_TICK_TIME || (CharacterOwner && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy && !bWasSimulatingRootMotion))
+	{
+		return;
+	}
+	
+	// Air strafe values
+	float ProjVelocity;
+	FVector AddedVelocity;
+	float AirSpeedCap; // How much speed is gained during air strafing?
+	float AirAccelerationMultiplier; // Drag is added to the equation if the accelerationMultiplier / 10 isn't the same as the player's velocity 
+	float AddSpeed;
+
+	
+	//--------------------------------------------------------------------------------------------------------------//
+	// AirStrafe Sway -> Air Control during specific movement actions (Wall jumps, ledge launches, etc.)			//
+	//--------------------------------------------------------------------------------------------------------------//
+	if (IsStrafeSwaying())
+	{
+		// Find strafe
+		ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
+		AirSpeedCap = (GetMaxAcceleration() / 100) * StrafeSwaySpeedGainMultiplier; // Strafe sway should have more control without slowing down the character's momentum
+		AirAccelerationMultiplier = StrafeSwayRotationRate;
+		
+		// Update the acceleration based on the character's air control
+		Acceleration = GetFallingLateralAcceleration(DeltaTime);
+		
+		// Allow Strafing, don't let the player stop the momentum from pressing an input in the opposite direction of the momentum
+		AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
+		if (AddSpeed > 0.0f)
+		{
+			AddedVelocity = Acceleration * AirAccelerationMultiplier * AirControl * DeltaTime;
+			AddedVelocity = AddedVelocity.GetClampedToMaxSize2D(AddSpeed);
+
+			// Don't allow the player to move against the strafe
+			const float AngleFromCurrentVelocity = Velocity.GetSafeNormal2D().Dot(AccelDir); 
+			if (AngleFromCurrentVelocity > -0.34) Velocity += AddedVelocity;
+		}
+		
+		/*
+		const FVector MovementDirection = Velocity.GetSafeNormal2D();
+		const FVector InputDirection = AccelDir;
+		FVector MovementVelocity = (MovementDirection * (1 - StrafeSwayInfluence)) + (InputDirection * StrafeSwayInfluence);
+		
+		// Apply the original velocity's gravity
+		MovementVelocity.Z = OldVelocity.Z;
+		Velocity = AccelDir * BaseSpeed;
+		
+		float Duration = 0;
+		if (BaseCharacter->IsLocallyControlled()) Duration = PrevWallJumpTime + StrafeSwayDuration - Time;
+		UE_LOGFMT(LogTemp, Log, "({0}) Strafe Sway ->  ({1}) Vel: ({2}), AccelDir: ({3}), Input: ({4}), Rotation: ({5}), Adjusted: ({6})",
+			Duration, *GetMovementDirection(Input), *Velocity.GetSafeNormal2D().ToString(), *AccelDir.ToString(), *Input.ToString(), *UpdatedComponent->GetComponentRotation().ToString(), *MovementVelocity.ToString());
+		*/
+	}
+	//--------------------------------------------------------------------------------------------------------------//
+	// Strafing / Bhopping physics																					//
+	//--------------------------------------------------------------------------------------------------------------//
+	else
+	{
+		// Find strafe
+		ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
+		AirSpeedCap = (GetMaxAcceleration() / 100) * AirStrafeSpeedGainMultiplier; // How much speed is gained during air strafing?
+		AirAccelerationMultiplier = AirStrafeRotationRate; // Drag is added to the equation if the accelerationMultiplier / 10 isn't the same as the player's velocity 
+		
+		// Update the acceleration based on the character's air control
+		Acceleration = GetFallingLateralAcceleration(DeltaTime);
+		
+		// Add strafing momentum to the character's velocity 
+		AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
+		if (AddSpeed > 0.0f)
+		{
+			AddedVelocity = Acceleration * AirAccelerationMultiplier * AirControl * DeltaTime;
+			AddedVelocity = AddedVelocity.GetClampedToMaxSize2D(AddSpeed);
+			Velocity += AddedVelocity;
+		}
+	}
+	
+	
+	// This is just Blueprint calc velocity logic
+	// BaseCharacter->CalculatedVelocity = Velocity;
+	// BaseCharacter->CalculatedAcceleration = Acceleration;
+	// BaseCharacter->BP_CalcVelocity(DeltaTime, BrakingDeceleration, Friction, IsStrafeSwaying(), Velocity, Acceleration, AccelDir);
+	// BaseCharacter->GetMovementValues(Velocity, Acceleration);
+	
+	// MovementInput, Gain/Lose Speed, AddedVelocity, Velocity, AirSpeedCap, AirAccelMultiplier
+	if (bDebugAirStrafe || bDebugStrafeSway)
+	{
+		if (AirStrafeSwayPhysics && !bDebugStrafeSway) return;
+		if (!AirStrafeSwayPhysics && !bDebugAirStrafe) return;
+		
+		UE_LOGFMT(LogTemp, Log, "{0}::{1} ({2}) ->  ({3})({4}) ProjectedVel: ({5}), AddedVel: ({6}), Velocity: ({7}), Speed: ({8}), AddedSpeed: ({9}), AccelDir: {10}, Cap: ({11}), AccelMultiplier: ({12})",
+			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
+			IsStrafeSwaying() ? *FString("Strafe_Sway") : *FString("Air_Strafe"),
+			IsStrafeSwaying() ? *FString::SanitizeFloat((PrevWallJumpTime + StrafeSwayDuration) - GetWorld()->GetTimeSeconds()) : *FString(""),
+			*GetMovementDirection(Input),
+			ProjVelocity < AirSpeedCap ? FString("+") : FString("-"), // I don't know if this is accurate, just that strafing adds velocity when the projected velocity is below 0 (and without strafing this value is the player's speed)
+			ProjVelocity,
+			*AddedVelocity.GetSafeNormal2D().ToString(),
+			*Velocity.GetSafeNormal2D().ToString(),
+			FMath::CeilToInt(FVector(Velocity.X, Velocity.Y, 0).Size()),
+			AddSpeed,
+			*FVector2D(AccelDir.X, AccelDir.Y).ToString(),
+			FMath::CeilToInt(AirSpeedCap),
+			AirAccelerationMultiplier
+		);
+	}
+}
+
+
+
+
+//------------------------------------------------------------------------------//
+// Falling Movement Logic														//
+//------------------------------------------------------------------------------//
+#pragma region Falling Logic
+void UAdvancedMovementComponent::HandleFallingFunctionality(float deltaTime, float& timeTick, int32& Iterations, float& remainingTime,
+	const FVector& OldVelocity, const FVector& OldVelocityWithRootMotion, FVector& Adjusted,
+	FVector& Gravity, float& GravityTime)
+{
+	// Apply input
+	if (!HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity())
+	{
+		Velocity.Z = 0.f;
+		CalcVelocity(timeTick, FallingLateralFriction, false, GetMaxBrakingDeceleration());
+		Velocity.Z = OldVelocity.Z;
+	}
+
+	// // If jump is providing force, gravity may be affected.
+	bool bEndingJumpForce = false;
+	if (CharacterOwner->JumpForceTimeRemaining > 0.0f)
+	{
+		// Consume some of the force time. Only the remaining time (if any) is affected by gravity when bApplyGravityWhileJumping=false.
+		const float JumpForceTime = FMath::Min(CharacterOwner->JumpForceTimeRemaining, timeTick);
+		GravityTime = bApplyGravityWhileJumping ? timeTick : FMath::Max(0.0f, timeTick - JumpForceTime);
+		
+		// Update Character state
+		CharacterOwner->JumpForceTimeRemaining -= JumpForceTime;
+		if (CharacterOwner->JumpForceTimeRemaining <= 0.0f)
+		{
+			CharacterOwner->ResetJumpState();
+			bEndingJumpForce = true;
+		}
+	}
+	
+	// Apply gravity
+	Velocity = NewFallVelocity(Velocity, Gravity, GravityTime);
+	// UE_LOG(LogTemp, Log, TEXT("dt=(%.6f) OldLocation=(%s) OldVelocity=(%s) OldVelocityWithRootMotion=(%s) NewVelocity=(%s)"), timeTick, *(UpdatedComponent->GetComponentLocation()).ToString(), *OldVelocity.ToString(), *OldVelocityWithRootMotion.ToString(), *Velocity.ToString());
+
+	// Root motion and friction
+	ApplyRootMotionToVelocity(timeTick);
+	DecayFormerBaseVelocity(timeTick);
+	
+	// See if we need to sub-step to exactly reach the apex. This is important for avoiding "cutting off the top" of the trajectory as framerate varies.
+	if (/* CharacterMovementCVars::ForceJumpPeakSubstep && */ OldVelocityWithRootMotion.Z > 0.f && Velocity.Z <= 0.f && NumJumpApexAttempts < MaxJumpApexAttemptsPerSimulation)
+	{
+		const FVector DerivedAccel = (Velocity - OldVelocityWithRootMotion) / timeTick;
+		if (!FMath::IsNearlyZero(DerivedAccel.Z))
+		{
+			const float TimeToApex = -OldVelocityWithRootMotion.Z / DerivedAccel.Z;
+			
+			// The time-to-apex calculation should be precise, and we want to avoid adding a substep when we are basically already at the apex from the previous iteration's work.
+			const float ApexTimeMinimum = 0.0001f;
+			if (TimeToApex >= ApexTimeMinimum && TimeToApex < timeTick)
+			{
+				const FVector ApexVelocity = OldVelocityWithRootMotion + (DerivedAccel * TimeToApex);
+				Velocity = ApexVelocity;
+				Velocity.Z = 0.f; // Should be nearly zero anyway, but this makes apex notifications consistent.
+	
+				// We only want to move the amount of time it takes to reach the apex, and refund the unused time for next iteration.
+				const float TimeToRefund = (timeTick - TimeToApex);
+	
+				remainingTime += TimeToRefund;
+				timeTick = TimeToApex;
+				Iterations--;
+				NumJumpApexAttempts++;
+	
+				// Refund time to any active Root Motion Sources as well
+				for (TSharedPtr<FRootMotionSource> RootMotionSource : CurrentRootMotion.RootMotionSources)
+				{
+					const float RewoundRMSTime = FMath::Max(0.0f, RootMotionSource->GetTime() - TimeToRefund);
+					RootMotionSource->SetTime(RewoundRMSTime);
+				}
+			}
+		}
+	}
+	
+	if (bNotifyApex && (Velocity.Z < 0.f))
+	{
+		// Just passed jump apex since now going down
+		bNotifyApex = false;
+		NotifyJumpApex();
+	}
+
+	// Compute change in position (using midpoint integration method).
+	Adjusted = 0.5f * (OldVelocityWithRootMotion + Velocity) * timeTick;
+	
+	// Special handling if ending the jump force where we didn't apply gravity during the jump.
+	if (bEndingJumpForce && !bApplyGravityWhileJumping)
+	{
+		// We had a portion of the time at constant speed then a portion with acceleration due to gravity.
+		// Account for that here with a more correct change in position.
+		const float NonGravityTime = FMath::Max(0.f, timeTick - GravityTime);
+		Adjusted = (OldVelocityWithRootMotion * NonGravityTime) + (0.5f*(OldVelocityWithRootMotion + Velocity) * GravityTime);
+	}
+}
+
+
+void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& timeTick, int32& Iterations, float& remainingTime,
+	const FVector& OldLocation, const FVector& OldVelocity, const FQuat& PawnRotation, FVector& Adjusted,
+	bool bHasLimitedAirControl, FVector& Gravity, float& GravityTime)
+{
+	// Move the character based on the updated velocity and acceleration
+	FHitResult Hit(1.f);
+	SafeMoveUpdatedComponent( Adjusted, PawnRotation, true, Hit);
+	
+	if (!HasValidData())
+	{
+		return;
+	}
+	
+	float LastMoveTimeSlice = timeTick;
+	float subTimeTickRemaining = timeTick * (1.f - Hit.Time);
+
+	// just entered water
+	if ( IsSwimming() )
+	{
+		remainingTime += subTimeTickRemaining;
+		StartSwimming(OldLocation, OldVelocity, timeTick, remainingTime, Iterations);
+		return;
+	}
+	
+	// if the character just landed on the ground
+	if (Hit.bBlockingHit && IsValidLandingSpot(UpdatedComponent->GetComponentLocation(), Hit))
+	{
+		remainingTime += subTimeTickRemaining;
+		ProcessLanded(Hit, remainingTime, Iterations);
+		return;
+	}
+
+	// Wall jump and wall movement both need the player's input for calculations
+	const FRotator CharacterRotation(0, UpdatedComponent->GetComponentRotation().Yaw, 0);
+	FVector AccelDir = (FVector(UKismetMathLibrary::GetForwardVector(CharacterRotation) * Input.X) + FVector(UKismetMathLibrary::GetRightVector(CharacterRotation) * Input.Y)).GetSafeNormal();
+	
+	// Check if the player is trying to wall jump
+	FHitResult JumpHit;
+	if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, Hit))
+	{
+		CalculateWallJumpTrajectory(WallJumpVector, JumpHit);
+		
+		// This is just Blueprint calc velocity logic
+		// BaseCharacter->CalculatedVelocity = Velocity;
+		// BaseCharacter->CalculatedAcceleration = Acceleration;
+		// BaseCharacter->BP_WallJump(OldLocation, Velocity, Acceleration, JumpHit);
+		// BaseCharacter->GetMovementValues(Velocity, Acceleration);
+		// UE_LOGFMT(LogTemp, Warning, "BP Wall Jumped! New Player Velocity: ({0}), AddedVelocity: ({1})", *Velocity.ToString(), *(WallJumpVector * WallJumpMultiplier * JumpZVelocity).ToString());
+		
+		float CurrentSpeed = FVector(Velocity.X, Velocity.Y, 0).Size(); // Unit vectors preserve the player's actual speed when you don't factor in upward momentum
+		FVector RedirectedVelocity = FVector(WallJumpVector.X, WallJumpVector.Y, 0) * CurrentSpeed;
+		FVector WallJumpBoost = WallJumpVector * WallJumpMultiplier * WallJumpSpeed;
+		Velocity = RedirectedVelocity + WallJumpBoost;
+		PrevWallJumpNormal = JumpHit.ImpactNormal;
+		PrevWallJumpTime = GetWorld()->GetTimeSeconds();
+
+		if (CharacterOwner->IsLocallyControlled()) EnableStrafeSwayPhysics();
+
+		if (bDebugWallJump)
+		{
+			UE_LOGFMT(LogTemp, Warning, "Wall Jumped! Velocity: ({0}), OldVelocity: ({1}), RedirectedVelocity: ({2}), WallJumpBoost: ({3}), CapturedSpeed: ({4})",
+				*Velocity.ToString(), *OldVelocity.ToString(), *RedirectedVelocity.ToString(), *WallJumpBoost.ToString(), CurrentSpeed
+			);
+		}
+	}
+	
+	// Handle impact deflections
+	else if ( Hit.bBlockingHit )
+	{
+		// Compute impact deflection based on final velocity, not integration step.
+		// This allows us to compute a new velocity from the deflected vector, and ensures the full gravity effect is included in the slide result.
+		Adjusted = Velocity * timeTick;
+		
+		// See if we can convert a normally invalid landing spot (based on the hit result) to a usable one.
+		if (!Hit.bStartPenetrating && ShouldCheckForValidLandingSpot(timeTick, Adjusted, Hit))
+		{
+			const FVector PawnLocation = UpdatedComponent->GetComponentLocation();
+			FFindFloorResult FloorResult;
+			FindFloor(PawnLocation, FloorResult, false);
+			if (FloorResult.IsWalkableFloor() && IsValidLandingSpot(PawnLocation, FloorResult.HitResult))
+			{
+				remainingTime += subTimeTickRemaining;
+				ProcessLanded(FloorResult.HitResult, remainingTime, Iterations);
+				return;
+			}
+		}
+
+		HandleImpact(Hit, LastMoveTimeSlice, Adjusted);
+		
+		// If we've changed physics mode, abort.
+		if (!HasValidData() || !IsFalling())
+		{
+			return;
+		}
+
+		// Limit air control based on what we hit.
+		// We moved to the impact point using air control, but may want to deflect from there based on a limited air control acceleration.
+		FVector VelocityNoAirControl = OldVelocity;
+		FVector AirControlAccel = Acceleration;
+		if (bHasLimitedAirControl)
+		{
+			FVector AirControlDeltaV;
+			AirControlAccel = (Velocity - VelocityNoAirControl) / timeTick;
+			AirControlDeltaV = AirControlAccel;
+			if (!IsValidLandingSpot(Hit.Location, Hit))
+			{
+				float WallAngle = AirControlAccel.GetSafeNormal().Dot(Hit.Normal);
+				if (WallAngle < 0.f)
+				{
+					// Allow movement parallel to the wall based on the character's current movements and their input, but not into it because that may push us up.
+					// TODO: this needs to factor in the character inputs to allow traversing slopes
+					FVector AirAndMovementAccel = Velocity.GetSafeNormal() + AirControlAccel.GetSafeNormal();
+					AirControlDeltaV = FVector::VectorPlaneProject(AirAndMovementAccel, Hit.Normal);
+				}
+			}
+
+			AirControlDeltaV *= LastMoveTimeSlice;
+			Adjusted = (VelocityNoAirControl + AirControlDeltaV) * LastMoveTimeSlice;
+			if (bDebugAirStrafe)
+			{
+				// UE_LOGFMT(LogTemp, Log, "VelocityTimeStep: ({0}), AirControlAccel: ({1}), AirControlDeltaV: ({2})", *(Velocity - VelocityNoAirControl).ToString(), *AirControlAccel.ToString(), *AirControlDeltaV.ToString());
+				DrawDebugLine(GetWorld(), OldLocation + FVector(0, 0, 64), (OldLocation + FVector(0, 0, 64)) + (Adjusted.GetSafeNormal() * 100), FColor::Emerald, false, 4);
+				DrawDebugLine(GetWorld(), OldLocation + FVector(0, 0, 30), (OldLocation + FVector(0, 0, 30)) + (AirControlAccel.GetSafeNormal() * 100), FColor::Blue, false, 4);
+				DrawDebugLine(GetWorld(), OldLocation + FVector(0, 0, 27), (OldLocation + FVector(0, 0, 27)) + (AirControlDeltaV.GetSafeNormal() * 100), FColor::Cyan, false, 4);
+			}
+		}
+		
+		const FVector OldHitNormal = Hit.Normal;
+		const FVector OldHitImpactNormal = Hit.ImpactNormal;
+		FVector Delta = ComputeSlideVector(Adjusted, 1.f - Hit.Time, OldHitNormal, Hit);
+		
+		// Compute velocity after deflection (only gravity component for RootMotion)
+		const UPrimitiveComponent* HitComponent = Hit.GetComponent();
+		if (/* PlayerCharacterMovementCVars::UseTargetVelocityOnImpact && */ !Velocity.IsNearlyZero() && MovementBaseUtility::IsSimulatedBase(HitComponent))
+		{
+			const FVector ContactVelocity = MovementBaseUtility::GetMovementBaseVelocity(HitComponent, NAME_None) + MovementBaseUtility::GetMovementBaseTangentialVelocity(HitComponent, NAME_None, Hit.ImpactPoint);
+			const FVector NewVelocity = Velocity - Hit.ImpactNormal * FVector::DotProduct(Velocity - ContactVelocity, Hit.ImpactNormal);
+			Velocity = HasAnimRootMotion() || CurrentRootMotion.HasOverrideVelocityWithIgnoreZAccumulate() ? FVector(Velocity.X, Velocity.Y, NewVelocity.Z) : NewVelocity;
+		}
+		else if (subTimeTickRemaining > UE_KINDA_SMALL_NUMBER && !bJustTeleported)
+		{
+			const FVector NewVelocity = (Delta / subTimeTickRemaining);
+			Velocity = HasAnimRootMotion() || CurrentRootMotion.HasOverrideVelocityWithIgnoreZAccumulate() ? FVector(Velocity.X, Velocity.Y, NewVelocity.Z) : NewVelocity;
+		}
+
+		float GravityFactor;
+		if (subTimeTickRemaining > UE_KINDA_SMALL_NUMBER && (Delta | Adjusted) > 0.f)
+		{
+			// The compute slide vector along surfaces doesn't calculate gravity, so we'll have to recalculate that here
+			float MaxSpeed = GetMaxSpeed();
+			GravityFactor = UKismetMathLibrary::MapRangeClamped(FVector2D(Velocity).Size(), MaxSpeed, MaxSpeed * 4, 1, .5);
+			FVector VelocityWithGravity = NewFallVelocity(Velocity, Gravity* GravityFactor, timeTick);
+			Velocity.Z = VelocityWithGravity.Z;
+
+			// TODO: Factor gravity based on the slope angle to allow the player to control while wall sliding
+			float SlopeAngle = Hit.Normal.Dot(UpdatedComponent->GetForwardVector()); 
+			
+			// Move in deflected direction.
+			SafeMoveUpdatedComponent( Delta, PawnRotation, true, Hit);
+			
+			if (Hit.bBlockingHit)
+			{
+				// hit second wall
+				LastMoveTimeSlice = subTimeTickRemaining;
+				subTimeTickRemaining = subTimeTickRemaining * (1.f - Hit.Time);
+			
+				if (IsValidLandingSpot(UpdatedComponent->GetComponentLocation(), Hit))
+				{
+					remainingTime += subTimeTickRemaining;
+					ProcessLanded(Hit, remainingTime, Iterations);
+					return;
+				}
+			
+				HandleImpact(Hit, LastMoveTimeSlice, Delta);
+			
+				// If we've changed physics mode, abort.
+				if (!HasValidData() || !IsFalling())
+				{
+					return;
+				}
+			
+				// Act as if there was no air control on the last move when computing new deflection.
+				if (bHasLimitedAirControl && Hit.Normal.Z > CharacterMovementConstants::VERTICAL_SLOPE_NORMAL_Z)
+				{
+					const FVector LastMoveNoAirControl = VelocityNoAirControl * LastMoveTimeSlice;
+					Delta = ComputeSlideVector(LastMoveNoAirControl, 1.f, OldHitNormal, Hit);
+				}
+			
+				FVector PreTwoWallDelta = Delta;
+				TwoWallAdjust(Delta, Hit, OldHitNormal);
+			
+				// Limit air control, but allow a slide along the second wall.
+				if (bHasLimitedAirControl)
+				{
+					const bool bCheckLandingSpot = false; // we already checked above.
+					const FVector AirControlDeltaV = LimitAirControl(subTimeTickRemaining, AirControlAccel, Hit, bCheckLandingSpot) * subTimeTickRemaining;
+			
+					// Only allow if not back in to first wall
+					if (FVector::DotProduct(AirControlDeltaV, OldHitNormal) > 0.f)
+					{
+						Delta += (AirControlDeltaV * subTimeTickRemaining);
+					}
+				}
+			
+				// Compute velocity after deflection (only gravity component for RootMotion)
+				if (subTimeTickRemaining > UE_KINDA_SMALL_NUMBER && !bJustTeleported)
+				{
+					const FVector NewVelocity = (Delta / subTimeTickRemaining);
+					Velocity = HasAnimRootMotion() || CurrentRootMotion.HasOverrideVelocityWithIgnoreZAccumulate() ? FVector(Velocity.X, Velocity.Y, NewVelocity.Z) : NewVelocity;
+				}
+			
+				// bDitch=true means that pawn is straddling two slopes, neither of which it can stand on
+				bool bDitch = ( (OldHitImpactNormal.Z > 0.f) && (Hit.ImpactNormal.Z > 0.f) && (FMath::Abs(Delta.Z) <= UE_KINDA_SMALL_NUMBER) && ((Hit.ImpactNormal | OldHitImpactNormal) < 0.f) );
+				SafeMoveUpdatedComponent( Delta, PawnRotation, true, Hit);
+				if ( Hit.Time == 0.f )
+				{
+					// if we are stuck then try to side step
+					FVector SideDelta = (OldHitNormal + Hit.ImpactNormal).GetSafeNormal2D();
+					if ( SideDelta.IsNearlyZero() )
+					{
+						SideDelta = FVector(OldHitNormal.Y, -OldHitNormal.X, 0).GetSafeNormal();
+					}
+					SafeMoveUpdatedComponent( SideDelta, PawnRotation, true, Hit);
+				}
+					
+				if ( bDitch || IsValidLandingSpot(UpdatedComponent->GetComponentLocation(), Hit) || Hit.Time == 0.f  )
+				{
+					remainingTime = 0.f;
+					ProcessLanded(Hit, remainingTime, Iterations);
+					return;
+				}
+				else if (GetPerchRadiusThreshold() > 0.f && Hit.Time == 1.f && OldHitImpactNormal.Z >= GetWalkableFloorZ())
+				{
+					// We might be in a virtual 'ditch' within our perch radius. This is rare.
+					const FVector PawnLocation = UpdatedComponent->GetComponentLocation();
+					const float ZMovedDist = FMath::Abs(PawnLocation.Z - OldLocation.Z);
+					const float MovedDist2DSq = (PawnLocation - OldLocation).SizeSquared2D();
+					if (ZMovedDist <= 0.2f * timeTick && MovedDist2DSq <= 4.f * timeTick)
+					{
+						Velocity.X += 0.25f * GetMaxSpeed() * (RandomStream.FRand() - 0.5f);
+						Velocity.Y += 0.25f * GetMaxSpeed() * (RandomStream.FRand() - 0.5f);
+						Velocity.Z = FMath::Max<float>(JumpZVelocity * 0.25f, 1.f);
+						Delta = Velocity * timeTick;
+						SafeMoveUpdatedComponent(Delta, PawnRotation, true, Hit);
+					}
+				}
+			}
+		}
+	}
+
+	if (Velocity.SizeSquared2D() <= UE_KINDA_SMALL_NUMBER * 10.f)
+	{
+		Velocity.X = 0.f;
+		Velocity.Y = 0.f;
+	}
+}
+
+
+bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& OldLocation, const FVector& PlayerInput, FHitResult& JumpHit, const FHitResult& Hit)
+{
+	// If the player isn't trying to wall jump, just return
+	if (!WallJumpPressed) return false;
+
+	// Prevent wall jumping immediately and wasting another jump (We use distance instead of height to account for ledges and all scenarios)
+	if ((UpdatedComponent->GetComponentLocation() - PreviousGroundLocation).Size() < WallJumpHeightFromGroundThreshold ) return false;
+	
+	// If the movement component has captured a valid wall already, just use that
+	if (Hit.bBlockingHit && !Hit.ImpactNormal.Equals(PrevWallJumpNormal, 0.1)
+	) {
+		JumpHit = Hit;
+		return true;
+	}
+	
+	const FVector Start = UpdatedComponent->GetComponentLocation();
+	const FVector InputDir = Start + PlayerInput * WallJumpValidDistance;
+	const FVector Front = Start + UpdatedComponent->GetForwardVector() * WallJumpValidDistance;
+	
+	TArray<AActor*> CharacterActors;
+	CharacterOwner->GetAllChildActors(CharacterActors); // TODO: Investigate if this includes player spawned actors
+	CharacterActors.AddUnique(CharacterOwner);
+
+	// Check whether there's a wall in front or behind the player
+	UKismetSystemLibrary::LineTraceSingle(
+		GetWorld(),
+		Start,
+		InputDir,
+		VisibilityChannel,
+		false,
+		CharacterActors,
+		bDebugWallJump ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		JumpHit,
+		true,
+		FColor::Emerald,
+		FColor::Blue,
+		5
+	);
+
+	if (!JumpHit.bBlockingHit)
+	{
+		UKismetSystemLibrary::LineTraceSingle(
+			GetWorld(),
+			Start,
+			Front,
+			VisibilityChannel,
+			false,
+			CharacterActors,
+			bDebugWallJump ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+			JumpHit,
+			true,
+			FColor::Cyan,
+			FColor::Blue,
+			5
+		);
+
+		if (!JumpHit.bBlockingHit)
+		{
+			return false;
+		}
+	}
+	
+	if (JumpHit.ImpactNormal.Equals(PrevWallJumpNormal, 0.1))
+	{
+		return false;
+	}
+
+	if (bDebugWallJump)
+	{
+		DrawDebugBox(
+			GetWorld(),
+			JumpHit.ImpactPoint,
+			FVector(5),
+			FColor::Emerald,
+			false,
+			5
+		);
+	}
+	
+	return true;
+}
+
+
+void UAdvancedMovementComponent::CalculateWallJumpTrajectory(FVector& WallJump, const FHitResult& Wall)
+{
+	// The velocity calculation happens when the character is already sliding alongside the wall, and we need a calculation that's net safe for handling every scenario safely
+	const FVector WallLocation = FVector(Wall.ImpactPoint.X, Wall.ImpactPoint.Y, 0);
+	const FVector PrevLocation = FVector(PreviousGroundLocation.X, PreviousGroundLocation.Y, 0);
+	if (PrevLocation.Equals(WallLocation, 25)) PreviousGroundLocation += Wall.Normal * 25;
+	
+	// Calculate the trajectory
+	const FVector CharacterTrajectory = (WallLocation - PrevLocation).GetSafeNormal2D();
+	const float WallAngle = Wall.ImpactNormal.Dot(CharacterTrajectory); // -0.5 or greater is 45^ or less
+	WallJump = (CharacterTrajectory - 2 * (CharacterTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
+	
+	// Check if the previous ground location is behind the wall location using the normal, if so fix the trajectory so it doesn't create the wrong walljumps
+	if (WallAngle > 0)
+	{
+		const FVector LocationAlignedToWall = (Wall.Normal.GetSafeNormal2D() * WallLocation) + ((FVector(1) - Wall.Normal.GetSafeNormal2D()) * PrevLocation);
+		const float DistanceFromWall = LocationAlignedToWall.Size();
+		const FVector WallJumpTrajectory = (WallLocation - (LocationAlignedToWall + (Wall.ImpactNormal * DistanceFromWall))).GetSafeNormal();
+		WallJump = (WallJumpTrajectory - 2 * (WallJumpTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
+
+		if (bDebugWallJump)
+		{
+			DrawDebugBox(GetWorld(), LocationAlignedToWall, FVector(10), FColor::Red, false, 5);
+			DrawDebugBox(GetWorld(), LocationAlignedToWall + Wall.ImpactNormal * DistanceFromWall, FVector(10), FColor::Orange, false, 5);
+		}
+	}
+	// Fix wall jumps when sliding alongside a wall
+	else if (WallAngle > -0.45)
+	{
+		WallJump = (Velocity.GetSafeNormal2D() - Wall.ImpactNormal) / 2 + Wall.ImpactNormal;
+		if (bDebugWallJump) UE_LOGFMT(LogTemp, Log, "AlongsideWallJump: {0}, Velocity: {1}, ImpactNormal: {2}, WallAngle: {3}", *WallJump.ToString(), *Velocity.GetSafeNormal2D().ToString(), *Wall.ImpactNormal.ToString(), WallAngle);
+	}
+
+	// Wall jump Z velocity
+	WallJump = FVector(WallJump.X, WallJump.Y, 0.54);
+	
+	// Smooth out gravity for non positive wall jump values
+	if (Velocity.GetSafeNormal().Z < 0)
+	{
+		WallJump = FVector(WallJump.X, WallJump.Y, 0.25);
+	}
+
+	if (bDebugWallJump)
+	{
+		// UE_LOGFMT(LogTemp, Warning, "Velocity: {0}, Acceleration: {1}, WallNormal: {2}, WallLocation: {3}, PrevLocation: {4}", *Velocity.ToString(), *Acceleration.ToString(), *Wall.ImpactNormal.ToString(), *WallLocation.ToString(), *PrevLocation.ToString());
+		DrawDebugBox(GetWorld(), PreviousGroundLocation, FVector(10), FColor::Blue, false, 5);
+		DrawDebugLine(GetWorld(), UpdatedComponent->GetComponentLocation(), UpdatedComponent->GetComponentLocation() + (WallJump * 250), FColor::Red, false, 5);
+	}
+}
+
+
+void UAdvancedMovementComponent::ResetWallJumpInformation(const EMovementMode PrevMode, uint8 PrevCustomMode)
+{
+	if (PrevMode == MOVE_Falling)
+	{
+		PrevWallJumpNormal = FVector::ZeroVector;
+		PrevWallJumpTime = 0;
+	}
+	else if (PrevMode == MOVE_Walking)
+	{
+		PreviousGroundLocation = UpdatedComponent->GetComponentLocation();
+	}
+}
+#pragma endregion 
+
+
+
+
+//------------------------------------------------------------------------------//
+// Ground Movement Logic														//
+//------------------------------------------------------------------------------//
+#pragma region Ground Movement
+void UAdvancedMovementComponent::BaseWalkingFunctionality(float deltaTime, int32& Iterations, const float timeTick)
+{
+	// Ensure velocity is horizontal.
+	MaintainHorizontalGroundVelocity();
+	Acceleration.Z = 0.f;
+
+	// Apply acceleration
+	if (!HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity())
+	{
+		CalcVelocity(timeTick, GroundFriction, false, GetMaxBrakingDeceleration());
+	}
+}
+
+
+void UAdvancedMovementComponent::BaseSlidingFunctionality(float deltaTime, int32& Iterations, const float timeTick)
+{
+	// Velocity calculation, and Ensure velocity is horizontal.
+	MaintainHorizontalGroundVelocity();
+	
+	if (!HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity())
+	{
+		float SlopeAngle = CurrentFloor.HitResult.ImpactNormal.Dot(UpdatedComponent->GetForwardVector()) * SlopeAngleFrictionMultiplier;
+		const float SlidingFrictionCalc = FMath::Clamp(SlidingFriction - SlopeAngle, 0, SlidingFriction * 3);
+		CalcVelocity(timeTick, SlidingFrictionCalc, false, GetMaxBrakingDeceleration());
+
+		if (bDebugSlide)
+		{
+			UE_LOGFMT(LogTemp, Warning, "SlopeAngle: {0}, Friction: {1}", SlopeAngle, SlidingFriction - SlopeAngle);
+		}
+	}
+}
+
+
+void UAdvancedMovementComponent::GroundMovementPhysics(float deltaTime, int32 Iterations)
+{
+	// Initial setup
+	bJustTeleported = false;
+	bool bCheckedFall = false;
+	bool bTriedLedgeMove = false;
+	float remainingTime = deltaTime;
+
+	// Perform the move
+	while (
+		(remainingTime >= MIN_TICK_TIME) &&
+		(Iterations < MaxSimulationIterations) &&
+		CharacterOwner &&
+		(CharacterOwner->Controller || bRunPhysicsWithNoController || HasAnimRootMotion() || CurrentRootMotion.HasOverrideVelocity() ||
+			(CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy)))
+	{
+		// Setup physics sub steps
+		Iterations++;
+		bJustTeleported = false;
+		const float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
+		remainingTime -= timeTick;
+
+		// Save current values
+		UPrimitiveComponent* const OldBase = GetMovementBase();
+		const FVector PreviousBaseLocation = (OldBase != NULL) ? OldBase->GetComponentLocation() : FVector::ZeroVector;
+		const FVector OldLocation = UpdatedComponent->GetComponentLocation();
+		const FFindFloorResult OldFloor = CurrentFloor;
+
+		RestorePreAdditiveRootMotionVelocity();
+		const FVector OldVelocity = Velocity;
+
+		//// This is the actual velocity and acceleration calculation ////
+		if (MovementMode == MOVE_Walking) BaseWalkingFunctionality(deltaTime, Iterations, timeTick);
+		else BaseSlidingFunctionality(deltaTime, Iterations, timeTick);
+
+		
+		ApplyRootMotionToVelocity(timeTick);
+		if (IsFalling())
+		{
+			// Root motion could have put us into Falling.
+			// No movement has taken place this movement tick so we pass on full time/past iteration count
+			StartNewPhysics(remainingTime + timeTick, Iterations - 1);
+			return;
+		}
+
+		// Compute move parameters
+		const FVector MoveVelocity = Velocity;
+		const FVector Delta = timeTick * MoveVelocity;
+		const bool bZeroDelta = Delta.IsNearlyZero();
+		FStepDownResult StepDownResult;
+
+		if (bZeroDelta)
+		{
+			remainingTime = 0.f;
+		}
+		else
+		{
+			// try to move forward
+			MoveAlongFloor(MoveVelocity, timeTick, &StepDownResult);
+
+			if (IsFalling())
+			{
+				// pawn decided to jump up
+				const float DesiredDist = Delta.Size();
+				if (DesiredDist > KINDA_SMALL_NUMBER)
+				{
+					const float ActualDist = (UpdatedComponent->GetComponentLocation() - OldLocation).Size2D();
+					remainingTime += timeTick * (1.f - FMath::Min(1.f, ActualDist / DesiredDist));
+				}
+
+				StartNewPhysics(remainingTime, Iterations);
+				return;
+			}
+			else if (IsSwimming()) //just entered water
+			{
+				StartSwimming(OldLocation, OldVelocity, timeTick, remainingTime, Iterations);
+				return;
+			}
+		}
+
+
+		// Update floor.
+		// StepUp might have already done it for us.
+		if (StepDownResult.bComputedFloor)
+		{
+			CurrentFloor = StepDownResult.FloorResult;
+		}
+		else
+		{
+			FindFloor(UpdatedComponent->GetComponentLocation(), CurrentFloor, bZeroDelta, NULL);
+		}
+
+
+		// check for ledges here
+		const bool bCheckLedges = !CanWalkOffLedges();
+		if (bCheckLedges && !CurrentFloor.IsWalkableFloor())
+		{
+			// calculate possible alternate movement
+			const FVector GravDir = FVector(0.f, 0.f, -1.f);
+			const FVector NewDelta = bTriedLedgeMove ? FVector::ZeroVector : GetLedgeMove(OldLocation, Delta, GravDir);
+			if (!NewDelta.IsZero())
+			{
+				// first revert this move
+				RevertMove(OldLocation, OldBase, PreviousBaseLocation, OldFloor, false);
+
+				// avoid repeated ledge moves if the first one fails
+				bTriedLedgeMove = true;
+
+				// Try new movement direction
+				Velocity = NewDelta / timeTick;
+				remainingTime += timeTick;
+				continue;
+			}
+			else
+			{
+				// see if it is OK to jump
+				// @todo collision : only thing that can be problem is that oldbase has world collision on - @5.3
+				bool bMustJump = bZeroDelta || (OldBase == NULL || (!OldBase->IsQueryCollisionEnabled() && MovementBaseUtility::IsDynamicBase(OldBase)));
+				if ((bMustJump || !bCheckedFall) && CheckFall(OldFloor, CurrentFloor.HitResult, Delta, OldLocation, remainingTime, timeTick, Iterations, bMustJump))
+				{
+					return;
+				}
+				bCheckedFall = true;
+
+				// revert this move
+				RevertMove(OldLocation, OldBase, PreviousBaseLocation, OldFloor, true);
+				remainingTime = 0.f;
+				break;
+			}
+		}
+		else
+		{
+			// Validate the floor check
+			if (CurrentFloor.IsWalkableFloor())
+			{
+				DebugGroundMovement(FString("This floor is valid to walk on"), FColor::Blue);
+				if (ShouldCatchAir(OldFloor, CurrentFloor))
+				{
+					HandleWalkingOffLedge(OldFloor.HitResult.ImpactNormal, OldFloor.HitResult.Normal, OldLocation, timeTick);
+					if (IsMovingOnGround())
+					{
+						// If still walking, then fall. If not, assume the user set a different mode they want to keep.
+						StartFalling(Iterations, remainingTime, timeTick, Delta, OldLocation);
+					}
+
+					return;
+				}
+
+				AdjustFloorHeight();
+				SetBase(CurrentFloor.HitResult.Component.Get(), CurrentFloor.HitResult.BoneName);
+			}
+			else if (CurrentFloor.HitResult.bStartPenetrating && remainingTime <= 0.f)
+			{
+				// The floor check failed because it started in penetration
+				// We do not want to try to move downward because the downward sweep failed, rather we'd like to try to pop out of the floor.
+				DebugGroundMovement(FString("This floor check failed"), FColor::Yellow);
+
+				FHitResult Hit(CurrentFloor.HitResult);
+				Hit.TraceEnd = Hit.TraceStart + FVector(0.f, 0.f, MAX_FLOOR_DIST);
+				const FVector RequestedAdjustment = GetPenetrationAdjustment(Hit);
+				ResolvePenetration(RequestedAdjustment, Hit, UpdatedComponent->GetComponentQuat());
+				bForceNextFloorCheck = true;
+			}
+
+			// check if just entered water
+			if (IsSwimming())
+			{
+				StartSwimming(OldLocation, Velocity, timeTick, remainingTime, Iterations);
+				return;
+			}
+
+			// See if we need to start falling.
+			if (!CurrentFloor.IsWalkableFloor() && !CurrentFloor.HitResult.bStartPenetrating)
+			{
+				DebugGroundMovement(FString("The character started falling"), FColor::Red);
+				const bool bMustJump = bJustTeleported || bZeroDelta || (OldBase == NULL || (!OldBase->IsQueryCollisionEnabled() && MovementBaseUtility::IsDynamicBase(OldBase)));
+				if ((bMustJump || !bCheckedFall) && CheckFall(OldFloor, CurrentFloor.HitResult, Delta, OldLocation, remainingTime, timeTick, Iterations, bMustJump))
+				{
+					return;
+				}
+				bCheckedFall = true;
+			}
+		}
+
+
+		// Allow overlap events and such to change physics state and velocity
+		if (IsMovingOnGround())
+		{
+			if (!bJustTeleported && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && timeTick >= MIN_TICK_TIME)
+			{
+				MaintainHorizontalGroundVelocity();
+			}
+		}
+
+		// If we didn't move at all this iteration then stop (since other iterations will also be stuck).
+		if (UpdatedComponent->GetComponentLocation() == OldLocation)
+		{
+			remainingTime = 0.f;
+			break;
+		}
+	}
+}
+#pragma endregion 
+
+
+
+
+//------------------------------------------------------------------------------//
+// Slide Logic																	//
+//------------------------------------------------------------------------------//
+#pragma region Sliding
+bool UAdvancedMovementComponent::CanSlide() const
+{
+	if (!CharacterOwner->GetCapsuleComponent() || IsFalling()) return false;
+	if (Velocity.Size2D() < 450) return false;
+	return true;
+}
+
+
+void UAdvancedMovementComponent::EnterSlide(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode)
+{
+	Velocity += Velocity.GetSafeNormal2D() * SlideEnterImpulse;
+}
+
+
+void UAdvancedMovementComponent::ExitSlide()
+{
+	if (IsSliding())
+	{
+		SetMovementMode(MOVE_Walking);
+	}
+}
+#pragma endregion 
+
+
+
+
+#pragma region Mantling
+bool UAdvancedMovementComponent::CheckIfSafeToVaultLedgeAndCaptureInformation()
+{
+	if (!CharacterOwner->GetCapsuleComponent())
+	{
+		return false;
+	}
+	
+	TArray<AActor*> CharacterActors;
+	CharacterOwner->GetAllChildActors(CharacterActors); // TODO: Investigate if this includes player spawned actors
+	CharacterActors.AddUnique(CharacterOwner);
+	
+	const UCapsuleComponent* CapsuleComponent = CharacterOwner->GetCapsuleComponent();
+	const float CapsuleHalfHeight = CapsuleComponent->GetScaledCapsuleHalfHeight() + VaultZOffset;
+	const float LedgeTraceHalfHeight = ((MaxLedgeHeight - MinLedgeHeight) / 2) - 20;
+	CapsuleComponentLocation = CapsuleComponent->GetComponentLocation() - (CapsuleComponent->GetUpVector() * CapsuleHalfHeight);
+
+	float Diameter = (MaxLedgeHeight + MinLedgeHeight) / 2;
+	FVector MovementInput = Acceleration.GetSafeNormal();
+	float ForwardOffset = -25.0f;
+
+	
+	// If there's a ledge that the character has to vault or mantle over
+	FVector Start = CapsuleComponentLocation + FVector(MovementInput * ForwardOffset) + FVector(0, 0, Diameter);
+	FVector End = FVector(MovementInput * ReachDistance) + Start;
+	FHitResult BlockingWall;
+	UKismetSystemLibrary::CapsuleTraceSingle(
+		GetWorld(),
+		Start,
+		End,
+		ForwardTraceRadius,
+		LedgeTraceHalfHeight,
+		VisibilityChannel,
+		false,
+		CharacterActors,
+		bDebugVault ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		BlockingWall,
+		true,
+		FLinearColor::Black,
+		FLinearColor::White,
+		MantleTraceDuration
+	);
+	
+	if (!IsWalkable(BlockingWall) && BlockingWall.bBlockingHit)
+	{
+		LedgeImpactLocation = BlockingWall.ImpactPoint;
+		LedgeImpactNormal = BlockingWall.ImpactNormal;
+	}
+	else
+	{
+		return false;
+	}
+	
+
+	// Check if the character is able to walk on this ledge
+	End = FVector(LedgeImpactLocation.X, LedgeImpactLocation.Y, CapsuleComponentLocation.Z) + (BlockingWall.ImpactNormal * FootPlacementFromLedge);
+	Start = End + FVector(0, 0, MaxLedgeHeight + DownwardTraceRadius + VaultZOffset); // Trace from the character's standing location to the character's height standing on the ledge
+	FHitResult LedgeCheck;
+	UKismetSystemLibrary::SphereTraceSingle(
+		GetWorld(),
+		Start,
+		End,
+		DownwardTraceRadius,
+		VisibilityChannel,
+		false,
+		CharacterActors,
+		bDebugVault ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		LedgeCheck,
+		true,
+		FLinearColor::Blue,
+		FLinearColor::Gray,
+		MantleTraceDuration
+	);
+	
+	if (IsWalkable(LedgeCheck))
+	{
+		TargetMantleLocation = FVector(LedgeCheck.Location.X, LedgeCheck.Location.Y, LedgeCheck.ImpactPoint.Z + CapsuleComponent->GetScaledCapsuleHalfHeight() + CharacterPlacementZOffset);
+		TargetMantleRotation = UKismetMathLibrary::Conv_VectorToRotator(LedgeImpactNormal * FVector(-1, -1, 0));
+		Ledge = LedgeCheck.GetComponent();
+	}
+	else
+	{
+		return false;
+	}
+
+	
+	// Check if the character has room to stand at the mantle location
+	Diameter = CapsuleComponent->GetScaledCapsuleHalfHeight_WithoutHemisphere() + LedgeRoomHeightOffset;
+	CharacterStandingLocation = TargetMantleLocation + FVector(0, 0, CapsuleComponentLocation.Z + VaultZOffset);
+	
+	Start = CharacterStandingLocation + FVector(0, 0, Diameter);
+	End = CharacterStandingLocation - FVector(0, 0, Diameter);
+	FHitResult RoomCheck;
+	UKismetSystemLibrary::SphereTraceSingleByProfile(
+		GetWorld(),
+		Start,
+		End,
+		CapsuleComponent->GetScaledCapsuleRadius() + LedgeRoomRadiusOffset,
+		FName("Player"),
+		false,
+		CharacterActors,
+		bDebugVault ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		RoomCheck,
+		true,
+		FLinearColor::Green,
+		FLinearColor::Red,
+		MantleTraceDuration
+	);
+	
+	if (!RoomCheck.bBlockingHit || !RoomCheck.bStartPenetrating) // TODO: Investigate this
+	{
+		const float CharacterHeight = TargetMantleLocation.Z - CharacterOwner->GetActorLocation().Z;
+		if (CharacterHeight > MantleHighHeightThreshold)
+		{
+			if (bMantleFromFall) MantleType = EVaultType::Vault_FallingCatch;
+			else MantleType = EVaultType::Vault_High;
+		}
+		else
+		{
+			// TODO: Add logic to check if this is an object the character is able to vault over
+			MantleType = EVaultType::Vault_Low;
+		}
+		return true;
+	}
+	else return false;
+}
+
+
+EVaultType UAdvancedMovementComponent::GetVaultType()
+{
+	return MantleType;
+}
+
+
+void UAdvancedMovementComponent::StartVault(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode)
+{
+	if (!CharacterOwner->GetCapsuleComponent()) return;
+	if (!CheckIfSafeToVaultLedgeAndCaptureInformation())
+	{
+		SetMovementMode(MOVE_Walking);
+		return;
+	}
+
+	VaultStartTime = GetWorld()->GetTimeSeconds();
+	VaultStartLocation = UpdatedComponent->GetComponentLocation();
+	bMantleFromFall = PrevMode == MOVE_Falling;
+	CharacterOwner->GetCapsuleComponent()->IgnoreComponentWhenMoving(Ledge, true);
+}
+
+
+void UAdvancedMovementComponent::ExitVault()
+{
+	StopMantling();
+	if (!CharacterOwner->GetCapsuleComponent()) return;
+	
+	VaultStartTime = 0;
+	VaultStartLocation = FVector::ZeroVector;
+	CharacterOwner->GetCapsuleComponent()->IgnoreComponentWhenMoving(Ledge, false);
+}
+
+
+F_VaultInformation UAdvancedMovementComponent::GetMantleInformation(const EVaultType Type) const
+{
+	if (!MantleInformation.Contains(Type)) return F_VaultInformation();
+	return MantleInformation[Type];
+}
+
+UCurveFloat* UAdvancedMovementComponent::GetMantleCurve(const EVaultType Type) const
+{
+	if (!MantleInformation.Contains(Type)) return nullptr;
+	return MantleInformation[Type].Curve;
+}
+
+float UAdvancedMovementComponent::GetMantleInterpSpeed(const EVaultType Type) const
+{
+	if (!MantleInformation.Contains(Type)) return 0;
+	return MantleInformation[Type].InterpSpeed;
+}
+
+float UAdvancedMovementComponent::GetMantleDuration(const EVaultType Type) const
+{
+	if (!MantleInformation.Contains(Type)) return 0;
+	return MantleInformation[Type].Duration;
+}
+
+FName UAdvancedMovementComponent::GetVaultSection()
+{
+	if (MantleType == EVaultType::Vault_High) return FName("High");
+	if (MantleType == EVaultType::Vault_Low) return FName("Low");
+	if (MantleType == EVaultType::Vault_VaultOver) return FName("VaultOver");
+	if (MantleType == EVaultType::Vault_FallingCatch) return FName("FallingCatch");
+	return FName();
+}
+#pragma endregion 
+
+
+
+
+//------------------------------------------------------------------------------//
+// Multiplayer input replication logic											//
+//------------------------------------------------------------------------------//
+#pragma region Multiplay input replication
+void UAdvancedMovementComponent::MoveAutonomous(float ClientTimeStamp, float DeltaTime, uint8 CompressedFlags, const FVector& NewAccel)
+{
+	// Save additional movement information 
+	FMCharacterNetworkMoveData* MoveData = static_cast<FMCharacterNetworkMoveData*>(GetCurrentNetworkMoveData());
+	if (MoveData) Input = MoveData->MoveData_Input;
+
+	Super::MoveAutonomous(ClientTimeStamp, DeltaTime, CompressedFlags, NewAccel);
+}
+
+
+void UAdvancedMovementComponent::UpdateFromCompressedFlags(uint8 Flags)
+{
+	Super::UpdateFromCompressedFlags(Flags);
+	PreventAirStrafing = (Flags & FSavedMove_Character::FLAG_Reserved_1) != 0;
+	AirStrafeSwayPhysics = (Flags & FSavedMove_Character::FLAG_Reserved_2) != 0;
+	WallJumpPressed = (Flags & FSavedMove_Character::FLAG_Custom_3) != 0;
+	AimPressed = (Flags & FSavedMove_Character::FLAG_Custom_2) != 0;
+	Mantling = (Flags & FSavedMove_Character::FLAG_Custom_1) != 0;
+	SprintPressed = (Flags & FSavedMove_Character::FLAG_Custom_0) != 0;
+}
+
+
+//------------------------------------------------------------------------------//
+// Bhop FMCharacterNetworkMoveData												//
+//------------------------------------------------------------------------------//
+void UAdvancedMovementComponent::FMCharacterNetworkMoveData::ClientFillNetworkMoveData(const FSavedMove_Character& ClientMove, ENetworkMoveType MoveType)
+{
+	Super::ClientFillNetworkMoveData(ClientMove, MoveType);
+	const FMSavedMove& SavedMove = static_cast<const FMSavedMove&>(ClientMove);
+	MoveData_Input = SavedMove.Input;
+}
+
+
+uint8 UAdvancedMovementComponent::FMSavedMove::GetCompressedFlags() const
+{
+	uint8 Result = Super::GetCompressedFlags();
+	if (SavedRequestToStartPreventAirStrafing) Result |= FLAG_Reserved_1;
+	if (SavedRequestToStartAirStrafeSwayPhysics) Result |= FLAG_Reserved_2;
+	if (SavedRequestToStartWallJumping) Result |= FLAG_Custom_3;
+	if (SavedRequestToStartAiming) Result |= FLAG_Custom_2;
+	if (SavedRequestToStartMantling) Result |= FLAG_Custom_1;
+	if (SavedRequestToStartSprinting) Result |= FLAG_Custom_0;
+	return Result;
+}
+
+
+void UAdvancedMovementComponent::FMSavedMove::Clear()
+{
+	Super::Clear();
+	SavedRequestToStartPreventAirStrafing = 0;
+	SavedRequestToStartAirStrafeSwayPhysics = 0;
+	SavedRequestToStartWallJumping = 0;
+	SavedRequestToStartAiming = 0;
+	SavedRequestToStartMantling = 0;
+	SavedRequestToStartSprinting = 0;
+	Input = FVector::ZeroVector;
+}
+
+
+bool UAdvancedMovementComponent::FMSavedMove::CanCombineWith(const FSavedMovePtr& NewMove, ACharacter* Character, float MaxDelta) const
+{
+	//Set which moves can be combined together. This will depend on the bit flags that are used.
+	const FMSavedMove* NewSavedMove = static_cast<FMSavedMove*>(NewMove.Get());
+	if (!Input.Equals(NewSavedMove->Input, 0.1)) return false;
+	if (SavedRequestToStartPreventAirStrafing != NewSavedMove->SavedRequestToStartPreventAirStrafing) return false; 
+	if (SavedRequestToStartAirStrafeSwayPhysics != NewSavedMove->SavedRequestToStartAirStrafeSwayPhysics) return false;
+	if (SavedRequestToStartWallJumping != NewSavedMove->SavedRequestToStartWallJumping) return false;
+	if (SavedRequestToStartAiming != NewSavedMove->SavedRequestToStartAiming) return false;
+	if (SavedRequestToStartMantling != NewSavedMove->SavedRequestToStartMantling) return false;
+	if (SavedRequestToStartSprinting != NewSavedMove->SavedRequestToStartSprinting) return false;
+	
+	return Super::CanCombineWith(NewMove, Character, MaxDelta);
+}
+
+
+bool UAdvancedMovementComponent::FMCharacterNetworkMoveData::Serialize(UCharacterMovementComponent& CharacterMovement, FArchive& Ar, UPackageMap* PackageMap, ENetworkMoveType MoveType)
+{
+	Super::Serialize(CharacterMovement, Ar, PackageMap, MoveType);
+	const bool bIsSaving = Ar.IsSaving();
+
+	// Save move values
+	SerializeOptionalValue<FVector_NetQuantize10>(bIsSaving, Ar, MoveData_Input, FVector_NetQuantize10::ZeroVector);
+	
+	return !Ar.IsError();
+}
+
+
+
+
+//------------------------------------------------------------------------------//
+// Bhop FMCharacterNetworkMoveDataContainer										//
+//------------------------------------------------------------------------------//
+UAdvancedMovementComponent::FMCharacterNetworkMoveDataContainer::FMCharacterNetworkMoveDataContainer()
+{
+	NewMoveData = &CustomDefaultMoveData[0];
+	PendingMoveData = &CustomDefaultMoveData[1];
+	OldMoveData = &CustomDefaultMoveData[2];
+}
+
+
+void UAdvancedMovementComponent::FMSavedMove::SetMoveFor(ACharacter* Character, float InDeltaTime, FVector const& NewAccel, FNetworkPredictionData_Client_Character& ClientData)
+{
+	Super::SetMoveFor(Character, InDeltaTime, NewAccel, ClientData);
+	
+	// Set our saved cmc values to the current(safe) values of the cmc
+	UAdvancedMovementComponent* CharacterMovement = Cast<UAdvancedMovementComponent>(Character->GetCharacterMovement());
+	Input = CharacterMovement->Input;
+	SavedRequestToStartPreventAirStrafing = CharacterMovement->PreventAirStrafing;
+	SavedRequestToStartAirStrafeSwayPhysics = CharacterMovement->AirStrafeSwayPhysics;
+	SavedRequestToStartWallJumping = CharacterMovement->WallJumpPressed;
+	SavedRequestToStartAiming = CharacterMovement->AimPressed;
+	SavedRequestToStartMantling = CharacterMovement->Mantling;
+	SavedRequestToStartSprinting = CharacterMovement->SprintPressed;
+}
+
+
+void UAdvancedMovementComponent::FMSavedMove::PrepMoveFor(ACharacter* Character)
+{
+	Super::PrepMoveFor(Character);
+	UAdvancedMovementComponent* CharacterMovement = Cast<UAdvancedMovementComponent>(Character->GetCharacterMovement());
+	CharacterMovement->Input = Input;
+	CharacterMovement->PreventAirStrafing = SavedRequestToStartPreventAirStrafing;
+	CharacterMovement->AirStrafeSwayPhysics = SavedRequestToStartAirStrafeSwayPhysics;
+	CharacterMovement->WallJumpPressed = SavedRequestToStartWallJumping;
+	CharacterMovement->AimPressed = SavedRequestToStartAiming;
+	CharacterMovement->Mantling = SavedRequestToStartMantling;
+	CharacterMovement->SprintPressed = SavedRequestToStartSprinting;
+}
+
+
+
+
+//------------------------------------------------------------------------------//
+// Bhop FNetworkPredicitonData_Client Implementation							//
+//------------------------------------------------------------------------------//
+UAdvancedMovementComponent::FMNetworkPredictionData_Client::FMNetworkPredictionData_Client(const UCharacterMovementComponent& ClientMovement) : Super(ClientMovement) {}
+FSavedMovePtr UAdvancedMovementComponent::FMNetworkPredictionData_Client::AllocateNewMove()
+{
+	return FSavedMovePtr(new FMSavedMove());
+}
+
+
+FNetworkPredictionData_Client* UAdvancedMovementComponent::GetPredictionData_Client() const
+{
+	check(PawnOwner != NULL);
+	if (!ClientPredictionData)
+	{
+		UAdvancedMovementComponent* MutableThis = const_cast<UAdvancedMovementComponent*>(this);
+		MutableThis->ClientPredictionData = new FMNetworkPredictionData_Client(*this);
+		MutableThis->ClientPredictionData->MaxSmoothNetUpdateDist = 92.f;
+		MutableThis->ClientPredictionData->NoSmoothNetUpdateDist = 140.f;
+	}
+
+	return ClientPredictionData;
+}
+#pragma endregion 
+
+
+
+//------------------------------------------------------------------------------//
+// Input Functions																//
+//------------------------------------------------------------------------------//
+#pragma region Input functions
+void UAdvancedMovementComponent::StartMantling() { Mantling = true; }
+void UAdvancedMovementComponent::StopMantling() { Mantling = false; }
+void UAdvancedMovementComponent::StartSprinting() { SprintPressed = true; }
+void UAdvancedMovementComponent::StopSprinting() { SprintPressed = false; }
+void UAdvancedMovementComponent::StartAiming() { AimPressed = true; }
+void UAdvancedMovementComponent::StopAiming() { AimPressed = false; }
+void UAdvancedMovementComponent::UpdatePlayerInput(const FVector& InputVector) { Input = InputVector; }
+void UAdvancedMovementComponent::StartWallJump() { WallJumpPressed = true; }
+void UAdvancedMovementComponent::StopWallJump() { WallJumpPressed = false; }
+void UAdvancedMovementComponent::StartPreventAirStrafing() { PreventAirStrafing = true; }
+void UAdvancedMovementComponent::StopPreventAirStrafing() { PreventAirStrafing = false; }
+void UAdvancedMovementComponent::EnableStrafeSwayPhysics()
+{
+	UE_LOGFMT(LogTemp, Warning, "{0}: Enabled Strafe Sway!", CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"));
+	AirStrafeSwayPhysics = true;
+}
+void UAdvancedMovementComponent::DisableStrafeSwayPhysics() { AirStrafeSwayPhysics = false; }
+#pragma endregion
+
+
+
+
+//------------------------------------------------------------------------------//
+// Jump Logic																	//
+//------------------------------------------------------------------------------//
+#pragma region Jumping
+bool UAdvancedMovementComponent::DoJump(bool bReplayingMoves)
+{
+	if (CharacterOwner && CharacterOwner->CanJump())
+	{
+		// Don't jump if we can't move up/down.
+		if (!bConstrainToPlane || FMath::Abs(PlaneConstraintNormal.Z) != 1.f)
+		{
+			// Jump forward boost for slide jumps
+			if (IsSliding())
+			{
+				// Add the boost based on how fast the character is walking through it's forward movement speed
+				float ForwardVelocity = GetMaxSpeed() / FVector::DotProduct(Velocity, UpdatedComponent->GetForwardVector());
+				const FVector ForwardVector = UpdatedComponent->GetForwardVector() * SlideJumpSpeed;
+				Velocity += ForwardVector;
+				//UE_LOG(LogTemp, Warning, TEXT("%s() %s: Slide Jump Calculations, MaxSpeed: %f, ForwardVelocity: %f, ForwardVector: %s, new Velocity: %s"), *FString(__FUNCTION__), *GetNameSafe(CharacterOwner), GetMaxSpeed(), ForwardVelocity, *ForwardVector.ToCompactString(), *Velocity.ToCompactString());
+			}
+
+			Velocity.Z = FMath::Max<FVector::FReal>(Velocity.Z + 1.f, JumpZVelocity);
+			//UE_LOG(LogTemp, Warning, TEXT("%s() %s: Go, do a crime. new velocity: %s"), *FString(__FUNCTION__), *GetNameSafe(CharacterOwner), *Velocity.ToCompactString());
+			SetMovementMode(MOVE_Falling);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+
+bool UAdvancedMovementComponent::CanAttemptJump() const
+{
+	return IsJumpAllowed() && (IsMovingOnGround() || IsFalling()); // Falling included for double-jump and non-zero jump hold time, but validated by character.
+	//!bWantsToCrouch &&
+}
+#pragma endregion 
+
+
+
+
+//------------------------------------------------------------------------------//
+// Crouch Logic																	//
+//------------------------------------------------------------------------------//
+#pragma region Crouching
+void UAdvancedMovementComponent::Crouch(bool bClientSimulation)
+{
+	// These are just overridden to add client side predicted replicated tags in safe to add areas
+	if (!HasValidData())
+	{
+		return;
+	}
+
+	if (!bClientSimulation && !CanCrouchInCurrentState())
+	{
+		return;
+	}
+
+	// See if collision is already at desired size.
+	if (CharacterOwner->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight() == GetCrouchedHalfHeight())
+	{
+		if (!bClientSimulation)
+		{
+			CharacterOwner->bIsCrouched = true;
+		}
+		CharacterOwner->OnStartCrouch( 0.f, 0.f );
+		HandleCrouchLogic();
+		return;
+	}
+
+	if (bClientSimulation && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy)
+	{
+		// restore collision size before crouching
+		ACharacter* DefaultCharacter = CharacterOwner->GetClass()->GetDefaultObject<ACharacter>();
+		CharacterOwner->GetCapsuleComponent()->SetCapsuleSize(DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleRadius(), DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight());
+		bShrinkProxyCapsule = true;
+	}
+
+	// Change collision size to crouching dimensions
+	const float ComponentScale = CharacterOwner->GetCapsuleComponent()->GetShapeScale();
+	const float OldUnscaledHalfHeight = CharacterOwner->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+	const float OldUnscaledRadius = CharacterOwner->GetCapsuleComponent()->GetUnscaledCapsuleRadius();
+	// Height is not allowed to be smaller than radius.
+	const float ClampedCrouchedHalfHeight = FMath::Max3(0.f, OldUnscaledRadius, GetCrouchedHalfHeight());
+	CharacterOwner->GetCapsuleComponent()->SetCapsuleSize(OldUnscaledRadius, ClampedCrouchedHalfHeight);
+	float HalfHeightAdjust = (OldUnscaledHalfHeight - ClampedCrouchedHalfHeight);
+	float ScaledHalfHeightAdjust = HalfHeightAdjust * ComponentScale;
+
+	if( !bClientSimulation )
+	{
+		// Crouching to a larger height? (this is rare)
+		if (ClampedCrouchedHalfHeight > OldUnscaledHalfHeight)
+		{
+			FCollisionQueryParams CapsuleParams(SCENE_QUERY_STAT(CrouchTrace), false, CharacterOwner);
+			FCollisionResponseParams ResponseParam;
+			InitCollisionParams(CapsuleParams, ResponseParam);
+			const bool bEnCrouched = GetWorld()->OverlapBlockingTestByChannel(UpdatedComponent->GetComponentLocation() - FVector(0.f,0.f,ScaledHalfHeightAdjust), FQuat::Identity,
+				UpdatedComponent->GetCollisionObjectType(), GetPawnCapsuleCollisionShape(SHRINK_None), CapsuleParams, ResponseParam);
+
+			// If encroached, cancel
+			if( bEnCrouched )
+			{
+				CharacterOwner->GetCapsuleComponent()->SetCapsuleSize(OldUnscaledRadius, OldUnscaledHalfHeight);
+				return;
+			}
+		}
+
+		if (bCrouchMaintainsBaseLocation)
+		{
+			// Intentionally not using MoveUpdatedComponent, where a horizontal plane constraint would prevent the base of the capsule from staying at the same spot.
+			UpdatedComponent->MoveComponent(FVector(0.f, 0.f, -ScaledHalfHeightAdjust), UpdatedComponent->GetComponentQuat(), true, nullptr, EMoveComponentFlags::MOVECOMP_NoFlags, ETeleportType::TeleportPhysics);
+		}
+
+		CharacterOwner->bIsCrouched = true;
+	}
+
+	bForceNextFloorCheck = true;
+
+	// OnStartCrouch takes the change from the Default size, not the current one (though they are usually the same).
+	const float MeshAdjust = ScaledHalfHeightAdjust;
+	ACharacter* DefaultCharacter = CharacterOwner->GetClass()->GetDefaultObject<ACharacter>();
+	HalfHeightAdjust = (DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight() - ClampedCrouchedHalfHeight);
+	ScaledHalfHeightAdjust = HalfHeightAdjust * ComponentScale;
+
+	AdjustProxyCapsuleSize();
+	CharacterOwner->OnStartCrouch( HalfHeightAdjust, ScaledHalfHeightAdjust );
+	HandleCrouchLogic();
+
+	// Don't smooth this change in mesh position
+	if ((bClientSimulation && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy) || (IsNetMode(NM_ListenServer) && CharacterOwner->GetRemoteRole() == ROLE_AutonomousProxy))
+	{
+		FNetworkPredictionData_Client_Character* ClientData = GetPredictionData_Client_Character();
+		if (ClientData)
+		{
+			ClientData->MeshTranslationOffset -= FVector(0.f, 0.f, MeshAdjust);
+			ClientData->OriginalMeshTranslationOffset = ClientData->MeshTranslationOffset;
+		}
+	}
+}
+
+void UAdvancedMovementComponent::UnCrouch(bool bClientSimulation)
+{
+	if (!HasValidData())
+	{
+		return;
+	}
+
+	ACharacter* DefaultCharacter = CharacterOwner->GetClass()->GetDefaultObject<ACharacter>();
+
+	// See if collision is already at desired size.
+	if( CharacterOwner->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight() == DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight() )
+	{
+		if (!bClientSimulation)
+		{
+			CharacterOwner->bIsCrouched = false;
+		}
+		CharacterOwner->OnEndCrouch( 0.f, 0.f );
+		HandleCrouchLogic();
+		return;
+	}
+
+	const float CurrentCrouchedHalfHeight = CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+
+	const float ComponentScale = CharacterOwner->GetCapsuleComponent()->GetShapeScale();
+	const float OldUnscaledHalfHeight = CharacterOwner->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight();
+	const float HalfHeightAdjust = DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight() - OldUnscaledHalfHeight;
+	const float ScaledHalfHeightAdjust = HalfHeightAdjust * ComponentScale;
+	const FVector PawnLocation = UpdatedComponent->GetComponentLocation();
+
+	// Grow to uncrouched size.
+	check(CharacterOwner->GetCapsuleComponent());
+
+	if( !bClientSimulation )
+	{
+		// Try to stay in place and see if the larger capsule fits. We use a slightly taller capsule to avoid penetration.
+		const UWorld* MyWorld = GetWorld();
+		const float SweepInflation = UE_KINDA_SMALL_NUMBER * 10.f;
+		FCollisionQueryParams CapsuleParams(SCENE_QUERY_STAT(CrouchTrace), false, CharacterOwner);
+		FCollisionResponseParams ResponseParam;
+		InitCollisionParams(CapsuleParams, ResponseParam);
+
+		// Compensate for the difference between current capsule size and standing size
+		const FCollisionShape StandingCapsuleShape = GetPawnCapsuleCollisionShape(SHRINK_HeightCustom, -SweepInflation - ScaledHalfHeightAdjust); // Shrink by negative amount, so actually grow it.
+		const ECollisionChannel CollisionChannel = UpdatedComponent->GetCollisionObjectType();
+		bool bEncroached = true;
+
+		if (!bCrouchMaintainsBaseLocation)
+		{
+			// Expand in place
+			bEncroached = MyWorld->OverlapBlockingTestByChannel(PawnLocation, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam);
+		
+			if (bEncroached)
+			{
+				// Try adjusting capsule position to see if we can avoid encroachment.
+				if (ScaledHalfHeightAdjust > 0.f)
+				{
+					// Shrink to a short capsule, sweep down to base to find where that would hit something, and then try to stand up from there.
+					float PawnRadius, PawnHalfHeight;
+					CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleSize(PawnRadius, PawnHalfHeight);
+					const float ShrinkHalfHeight = PawnHalfHeight - PawnRadius;
+					const float TraceDist = PawnHalfHeight - ShrinkHalfHeight;
+					const FVector Down = FVector(0.f, 0.f, -TraceDist);
+
+					FHitResult Hit(1.f);
+					const FCollisionShape ShortCapsuleShape = GetPawnCapsuleCollisionShape(SHRINK_HeightCustom, ShrinkHalfHeight);
+					const bool bBlockingHit = MyWorld->SweepSingleByChannel(Hit, PawnLocation, PawnLocation + Down, FQuat::Identity, CollisionChannel, ShortCapsuleShape, CapsuleParams);
+					if (Hit.bStartPenetrating)
+					{
+						bEncroached = true;
+					}
+					else
+					{
+						// Compute where the base of the sweep ended up, and see if we can stand there
+						const float DistanceToBase = (Hit.Time * TraceDist) + ShortCapsuleShape.Capsule.HalfHeight;
+						const FVector NewLoc = FVector(PawnLocation.X, PawnLocation.Y, PawnLocation.Z - DistanceToBase + StandingCapsuleShape.Capsule.HalfHeight + SweepInflation + MIN_FLOOR_DIST / 2.f);
+						bEncroached = MyWorld->OverlapBlockingTestByChannel(NewLoc, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam);
+						if (!bEncroached)
+						{
+							// Intentionally not using MoveUpdatedComponent, where a horizontal plane constraint would prevent the base of the capsule from staying at the same spot.
+							UpdatedComponent->MoveComponent(NewLoc - PawnLocation, UpdatedComponent->GetComponentQuat(), false, nullptr, EMoveComponentFlags::MOVECOMP_NoFlags, ETeleportType::TeleportPhysics);
+						}
+					}
+				}
+			}
+		}
+		else
+		{
+			// Expand while keeping base location the same.
+			FVector StandingLocation = PawnLocation + FVector(0.f, 0.f, StandingCapsuleShape.GetCapsuleHalfHeight() - CurrentCrouchedHalfHeight);
+			bEncroached = MyWorld->OverlapBlockingTestByChannel(StandingLocation, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam);
+
+			if (bEncroached)
+			{
+				if (IsMovingOnGround())
+				{
+					// Something might be just barely overhead, try moving down closer to the floor to avoid it.
+					const float MinFloorDist = UE_KINDA_SMALL_NUMBER * 10.f;
+					if (CurrentFloor.bBlockingHit && CurrentFloor.FloorDist > MinFloorDist)
+					{
+						StandingLocation.Z -= CurrentFloor.FloorDist - MinFloorDist;
+						bEncroached = MyWorld->OverlapBlockingTestByChannel(StandingLocation, FQuat::Identity, CollisionChannel, StandingCapsuleShape, CapsuleParams, ResponseParam);
+					}
+				}				
+			}
+
+			if (!bEncroached)
+			{
+				// Commit the change in location.
+				UpdatedComponent->MoveComponent(StandingLocation - PawnLocation, UpdatedComponent->GetComponentQuat(), false, nullptr, EMoveComponentFlags::MOVECOMP_NoFlags, ETeleportType::TeleportPhysics);
+				bForceNextFloorCheck = true;
+			}
+		}
+
+		// If still encroached then abort.
+		if (bEncroached)
+		{
+			return;
+		}
+
+		CharacterOwner->bIsCrouched = false;
+	}	
+	else
+	{
+		bShrinkProxyCapsule = true;
+	}
+
+	// Now call SetCapsuleSize() to cause touch/untouch events and actually grow the capsule
+	CharacterOwner->GetCapsuleComponent()->SetCapsuleSize(DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleRadius(), DefaultCharacter->GetCapsuleComponent()->GetUnscaledCapsuleHalfHeight(), true);
+
+	const float MeshAdjust = ScaledHalfHeightAdjust;
+	AdjustProxyCapsuleSize();
+	CharacterOwner->OnEndCrouch( HalfHeightAdjust, ScaledHalfHeightAdjust );
+	HandleCrouchLogic();
+
+	// Don't smooth this change in mesh position
+	if ((bClientSimulation && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy) || (IsNetMode(NM_ListenServer) && CharacterOwner->GetRemoteRole() == ROLE_AutonomousProxy))
+	{
+		FNetworkPredictionData_Client_Character* ClientData = GetPredictionData_Client_Character();
+		if (ClientData)
+		{
+			ClientData->MeshTranslationOffset += FVector(0.f, 0.f, MeshAdjust);
+			ClientData->OriginalMeshTranslationOffset = ClientData->MeshTranslationOffset;
+		}
+	}
+}
+
+
+void UAdvancedMovementComponent::HandleCrouchLogic()
+{
+	// BaseAbilitySystem = BaseAbilitySystem ? BaseAbilitySystem : GetAbilitySystem();
+	// if (!BaseAbilitySystem) return;
+	//
+	// if (IsCrouching())
+	// {
+	// 	if (!BaseAbilitySystem->HasMatchingGameplayTag(CrouchTag))
+	// 	{
+	// 		BaseAbilitySystem->AddLooseGameplayTag(CrouchTag);
+	// 		BaseAbilitySystem->AddReplicatedLooseGameplayTag(CrouchTag);
+	// 	}
+	// }
+	// else
+	// {
+	// 	if (BaseAbilitySystem->HasMatchingGameplayTag(CrouchTag))
+	// 	{
+	// 		BaseAbilitySystem->RemoveLooseGameplayTag(CrouchTag);
+	// 		BaseAbilitySystem->RemoveReplicatedLooseGameplayTag(CrouchTag);
+	// 	}
+	// }
+}
+#pragma endregion 
+
+
+//------------------------------------------------------------------------------//
+// Get And Set functions														//
+//------------------------------------------------------------------------------//
+#pragma region Get and set functions
+float UAdvancedMovementComponent::GetMaxAcceleration() const
+{
+	if (IsFalling()) return StrafingMaxAcceleration;
+	return Super::GetMaxAcceleration();
+}
+
+
+float UAdvancedMovementComponent::GetMaxBrakingDeceleration() const
+{
+	return Super::GetMaxBrakingDeceleration();
+}
+
+
+void UAdvancedMovementComponent::UpdateExternalMovementModeInformation(EMovementMode& MovementModeRef, uint8& CustomMovementModeRef)
+{
+	MovementModeRef = MovementMode;
+	CustomMovementModeRef = CustomMovementMode;
+}
+#pragma endregion 
+
+
+//------------------------------------------------------------------------------//
+// Utility																		//
+//------------------------------------------------------------------------------//
+#pragma region Utility
+void UAdvancedMovementComponent::HandleInAirLogic()
+{
+// 	BaseAbilitySystem = BaseAbilitySystem ? BaseAbilitySystem : GetAbilitySystem();
+// 	if (!BaseAbilitySystem) return;
+//
+// 	if (IsFalling())
+// 	{
+// 		if (!BaseAbilitySystem->HasMatchingGameplayTag(InAirTag))
+// 		{
+// 			BaseAbilitySystem->AddLooseGameplayTag(InAirTag);
+// 			BaseAbilitySystem->AddReplicatedLooseGameplayTag(InAirTag);
+// 		}
+// 	}
+// 	else
+// 	{
+// 		if (BaseAbilitySystem->HasMatchingGameplayTag(InAirTag))
+// 		{
+// 			BaseAbilitySystem->RemoveLooseGameplayTag(InAirTag);
+// 			BaseAbilitySystem->RemoveReplicatedLooseGameplayTag(InAirTag);
+// 		}
+// 	}
+}
+
+
+// UBaseAbilitySystem* UAdvancedMovementComponent::GetAbilitySystem() const
+// {
+// 	if (!BaseCharacter) return nullptr;
+// 	return BaseCharacter->GetBaseAbilitySystem();
+// }
+
+
+void UAdvancedMovementComponent::DebugGroundMovement(FString Message, FColor Color, bool DrawSphere)
+{
+	if (!bDebugGroundMovement) return;
+	GEngine->AddOnScreenDebugMessage(2, 10.f, Color, Message);
+	FVector Start = UpdatedComponent->GetComponentLocation();
+	FVector End = Start + CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() * 2.5f * FVector::DownVector;
+	DrawDebugLine(GetWorld(), Start, End, Color, false, 5.f);
+	if (DrawSphere) DrawDebugSphere(GetWorld(), Start, 10.f, 12, Color, false, 5.f);
+}
+
+
+FString UAdvancedMovementComponent::GetMovementDirection(const FVector& PlayerInput) const
+{
+	const float Forwards = PlayerInput.X;
+	const float Sideways = PlayerInput.Y;
+
+	if (Sideways != 0 && Forwards != 0)
+	{
+		if (Forwards > 0) return Sideways > 0 ? FString("FR") : FString("FL");
+		else return Sideways > 0 ? FString("BR") : FString("BL");
+	}
+
+	if (Sideways == 0 && Forwards == 0) return FString("N");
+	if (Sideways == 0) return Forwards > 0 ? FString("F") : FString("B");
+	return Sideways > 0 ? FString("R") : FString("L");
+}
+#pragma endregion

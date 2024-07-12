@@ -719,11 +719,12 @@ public:
 	virtual bool DoJump(bool bReplayingMoves) override;
 
 	
-	/** Returns true if current movement state allows an attempt at jumping. Used by Character::CanJump(). */
+	/**
+	 * Returns true if current movement state allows an attempt at jumping. Used by Character::CanJump().
+	 * @note This needs to be linked to the character's function in order for this to work
+	*/
 	virtual bool CanAttemptJump() const override;
-
-
-
+	
 	
 	//------------------------------------------------------------------------------//
 	// Crouch Logic																	//

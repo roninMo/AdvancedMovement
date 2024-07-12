@@ -20,6 +20,7 @@ namespace CharacterMovementConstants // @ref 5.4
 }
 
 
+
 UAdvancedMovementComponent::UAdvancedMovementComponent()
 {
 	SetNetworkMoveDataContainer(CustomMoveDataContainer);
@@ -485,6 +486,7 @@ void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, b
 	if (PreventAirStrafing) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
 
 
+	
 	
 	//--------------------------------------------------------------------------------------------------------------------------------------//
 	// Air Strafing																															//
@@ -1740,6 +1742,7 @@ FNetworkPredictionData_Client* UAdvancedMovementComponent::GetPredictionData_Cli
 
 
 
+
 //------------------------------------------------------------------------------//
 // Input Functions																//
 //------------------------------------------------------------------------------//
@@ -1755,11 +1758,7 @@ void UAdvancedMovementComponent::StartWallJump() { WallJumpPressed = true; }
 void UAdvancedMovementComponent::StopWallJump() { WallJumpPressed = false; }
 void UAdvancedMovementComponent::StartPreventAirStrafing() { PreventAirStrafing = true; }
 void UAdvancedMovementComponent::StopPreventAirStrafing() { PreventAirStrafing = false; }
-void UAdvancedMovementComponent::EnableStrafeSwayPhysics()
-{
-	UE_LOGFMT(LogTemp, Warning, "{0}: Enabled Strafe Sway!", CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"));
-	AirStrafeSwayPhysics = true;
-}
+void UAdvancedMovementComponent::EnableStrafeSwayPhysics() { AirStrafeSwayPhysics = true; }
 void UAdvancedMovementComponent::DisableStrafeSwayPhysics() { AirStrafeSwayPhysics = false; }
 #pragma endregion
 
@@ -1906,6 +1905,7 @@ void UAdvancedMovementComponent::Crouch(bool bClientSimulation)
 		}
 	}
 }
+
 
 void UAdvancedMovementComponent::UnCrouch(bool bClientSimulation)
 {

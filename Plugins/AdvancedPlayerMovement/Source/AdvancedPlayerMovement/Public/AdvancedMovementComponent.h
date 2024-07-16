@@ -157,9 +157,9 @@ class UAdvancedMovementComponent : public UCharacterMovementComponent
 	GENERATED_BODY()
 
 	
-	//----------------------------------------------------------------------------------------------------------------------------------//
-	// Mantling																															//
-	//----------------------------------------------------------------------------------------------------------------------------------//
+//----------------------------------------------------------------------------------------------------------------------------------//
+// Mantling																															//
+//----------------------------------------------------------------------------------------------------------------------------------//
 protected:
 	/** Mantle Falling Settings */ // TODO: Refactor this to use root motion source, and curves for smooth interps
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting") float MantleInterpSpeed_Low = 6.0;
@@ -219,9 +219,9 @@ protected:
 
 	
 	
-	//----------------------------------------------------------------------------------------------------------------------------------//
-	// Bhop																																//
-	//----------------------------------------------------------------------------------------------------------------------------------//
+//----------------------------------------------------------------------------------------------------------------------------------//
+// Bhop																																//
+//----------------------------------------------------------------------------------------------------------------------------------//
 protected:
 	/** Max Strafing Acceleration (how fast you speed up) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Jumping / Falling") float StrafingMaxAcceleration = 6400;
@@ -256,9 +256,9 @@ public:
 	
 
 	
-	//----------------------------------------------------------------------------------------------------------------------------------//
-	// Sliding																															//
-	//----------------------------------------------------------------------------------------------------------------------------------//
+//----------------------------------------------------------------------------------------------------------------------------------//
+// Sliding																															//
+//----------------------------------------------------------------------------------------------------------------------------------//
 protected:
 	/** The initial boost once you enter the slide movement mode */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Sliding") float SlideEnterImpulse = 450;
@@ -281,9 +281,9 @@ protected:
 	
 	
 	
-	//----------------------------------------------------------------------------------------------------------------------------------//
-	// Wall Jumping																														//
-	//----------------------------------------------------------------------------------------------------------------------------------//
+//----------------------------------------------------------------------------------------------------------------------------------//
+// Wall Jumping																														//
+//----------------------------------------------------------------------------------------------------------------------------------//
 protected:
 	/** How far away is a wall allowed to for the player to be able to wall jump against */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump") float WallJumpValidDistance = 45.0;
@@ -307,9 +307,9 @@ public:
 
 
 	
-	//----------------------------------------------------------------------------------------------------------------------------------//
-	// Other																															//
-	//----------------------------------------------------------------------------------------------------------------------------------//
+//----------------------------------------------------------------------------------------------------------------------------------//
+// Other																															//
+//----------------------------------------------------------------------------------------------------------------------------------//
 protected:
 	/** Debug wall jump checks and trajectories */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement: Debugging") bool bDebugWallJump = false;
@@ -362,9 +362,9 @@ protected:
 
 
 	
-	//------------------------------------------------------------------------------//
-	// General Movement Logic														//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// General Movement Logic														//
+//------------------------------------------------------------------------------//
 public:
 	/** Returns maximum speed of component in current movement mode. */
 	virtual float GetMaxSpeed() const override;
@@ -392,9 +392,9 @@ public:
 
 
 	
-	//------------------------------------------------------------------------------//
-	// Update Movement Mode Logic													//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Update Movement Mode Logic													//
+//------------------------------------------------------------------------------//
 protected:
 	/** Updates the character state in PerformMovement right before doing the actual position change
 	 * This handles updating the movement mode updates from player inputs
@@ -414,9 +414,9 @@ protected:
 
 
 	
-	//------------------------------------------------------------------------------//
-	// Physics Functions															//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Physics Functions															//
+//------------------------------------------------------------------------------//
 protected:
 	/** changes physics based on MovementMode */
 	virtual void StartNewPhysics(float deltaTime, int32 Iterations) override;
@@ -450,9 +450,9 @@ protected:
 
 
 	
-	//------------------------------------------------------------------------------//
-	// Falling Movement Logic														//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Falling Movement Logic														//
+//------------------------------------------------------------------------------//
 protected:
 	/** This applies the velocity and acceleration based on the input acceleration, air control, gravity, and jump force of the character before calculating collisions and updating the character's movement
 	 * @note This is Movement update function logic, and should only be called through Physics functions
@@ -480,9 +480,9 @@ protected:
 	virtual void ResetWallJumpInformation(EMovementMode PrevMode, uint8 PrevCustomMode);
 
 	
-	//------------------------------------------------------------------------------//
-	// Ground Movement Logic														//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Ground Movement Logic														//
+//------------------------------------------------------------------------------//
 protected:
 	/** This applies the velocity and acceleration based on the inputs of the character.
 	 * @note This is Movement update function logic, and should only be called through Physics functions
@@ -502,9 +502,9 @@ protected:
 	
 
 	
-	//------------------------------------------------------------------------------//
-	// Slide Logic																	//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Slide Logic																	//
+//------------------------------------------------------------------------------//
 public:
 	/** Returns true if current movement state and surface is valid for sliding, and if the player meets the minimum speed requirements for sliding */
 	UFUNCTION(BlueprintCallable) virtual bool CanSlide() const;
@@ -520,9 +520,9 @@ protected:
 	
 
 	
-	//------------------------------------------------------------------------------//
-	// Vault Logic																	//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Vault Logic																	//
+//------------------------------------------------------------------------------//
 public:
 	/** Checks if there's an object that the player can vault or mantle over */
 	UFUNCTION(BlueprintCallable) virtual bool CheckIfSafeToVaultLedgeAndCaptureInformation();
@@ -558,9 +558,9 @@ protected:
 
 
 	
-	//------------------------------------------------------------------------------//
-	// Custom FSavedMove related function											//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Custom FSavedMove related function											//
+//------------------------------------------------------------------------------//
 public:
 	/** Unpack compressed flags from a saved move and set state accordingly. See FSavedMove_Character. */
 	virtual void UpdateFromCompressedFlags(uint8 Flags) override;
@@ -679,9 +679,9 @@ public:
 	
 	
 	
-	//------------------------------------------------------------------------------//
-	// Input Functions																//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Input Functions																//
+//------------------------------------------------------------------------------//
 public:
 	UFUNCTION(BlueprintCallable) void StartMantling();
 	UFUNCTION(BlueprintCallable) void StopMantling();
@@ -706,9 +706,9 @@ public:
 	
 
 	
-	//------------------------------------------------------------------------------//
-	// Jump Logic																	//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Jump Logic																	//
+//------------------------------------------------------------------------------//
 public:
 	/**
 	 * Perform jump. Called by Character when a jump has been detected because Character->bPressedJump was true. Checks Character->CanJump().
@@ -726,9 +726,9 @@ public:
 	virtual bool CanAttemptJump() const override;
 	
 	
-	//------------------------------------------------------------------------------//
-	// Crouch Logic																	//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Crouch Logic																	//
+//------------------------------------------------------------------------------//
 public:
 	/**
 	 * Checks if new capsule size fits (no encroachment), and call CharacterOwner->OnStartCrouch() if successful.
@@ -747,9 +747,9 @@ public:
 	virtual void HandleCrouchLogic();
 	
 
-	//------------------------------------------------------------------------------//
-	// Get And Set functions														//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Get And Set functions														//
+//------------------------------------------------------------------------------//
 	/** Returns maximum acceleration for the current state. */
 	virtual float GetMaxAcceleration() const override;
 	
@@ -760,9 +760,9 @@ public:
 	virtual void UpdateExternalMovementModeInformation(EMovementMode& MovementModeRef, uint8& CustomMovementModeRef);
 	
 	
-	//------------------------------------------------------------------------------//
-	// Utility																		//
-	//------------------------------------------------------------------------------//
+//------------------------------------------------------------------------------//
+// Utility																		//
+//------------------------------------------------------------------------------//
 public:
 	/** Gets the ability system from the character component */
 	// UBaseAbilitySystem* GetAbilitySystem() const;

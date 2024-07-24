@@ -57,6 +57,15 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	WallJumpBoost = FVector(100, 100, 74);
 	WallJumpValidDistance = 45;
 	WallJumpHeightFromGroundThreshold = 64.0;
+
+	// Wall Climbing
+	WallClimbDuration = 2;
+	WallClimbInterval = 0.64;
+	WallClimbSpeed = 200;
+	WallClimbAcceleration = 20;
+	WallClimbMultiplier = FVector(0.64, 0.64, 1);
+	WallClimbFriction = 2.5;
+	AddWallClimbSpeedThreshold = -10;
 	
 	// // CharacterMovement (General Settings)
 	MaxAcceleration = 1200; // Derived from the Acceleration values 
@@ -199,8 +208,11 @@ void UAdvancedMovementComponent::UpdateCharacterStateBeforeMovement(const float 
 	Super::UpdateCharacterStateBeforeMovement(DeltaSeconds);
 	if (CharacterOwner->IsLocallyControlled() && GetWorld())
 	{
-		Time = GetWorld()->GetTimeSeconds();
+		Time = GetWorld()->GetTimeSeconds(); // TODO: after a duration, have the server (uses the client's) and client time be in sync with each other and prevent cheating on the client side
 	}
+
+	// TODO: Fix this, I don't want to add extra input actions though. They do not update values if you don't enter a value, but this is already handled when they convert input into acceleration before sending it to the server
+	if (Acceleration.Equals(FVector::ZeroVector, 0.01)) PlayerInput = FVector::ZeroVector;
 
 	// Handle Strafe sway duration
 	if (IsStrafeSwaying() && StrafeSwayActivationTime + StrafeSwayDuration <= Time)
@@ -209,9 +221,6 @@ void UAdvancedMovementComponent::UpdateCharacterStateBeforeMovement(const float 
 	}
 
 	// Handle wall run duration
-
-	// TODO: Fix this, I don't want to add extra input actions though. They do not update values if you don't enter a value, but this is already handled when they convert input into acceleration before sending it to the server
-	if (Acceleration.Equals(FVector::ZeroVector, 0.01)) PlayerInput = FVector::ZeroVector;
 	
 	// Slide
 	if (IsCrouching() && !IsSliding() && CanSlide())
@@ -246,12 +255,15 @@ void UAdvancedMovementComponent::OnMovementModeChanged(EMovementMode PreviousMov
 	
 	// Handle exiting previous modes
 	if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_Slide) ExitSlide();
-	ResetWallJumpInformation(PreviousMovementMode, PreviousCustomMode);
+	if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_WallClimbing) ExitWallClimb();
 
 	// Handle entering new modes
 	if (IsCustomMovementMode(MOVE_Custom_Slide)) EnterSlide(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
+	if (IsCustomMovementMode(MOVE_Custom_WallClimbing)) EnterWallClimb(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
 
 	// State information
+	ResetWallJumpInformation(PreviousMovementMode, PreviousCustomMode);
+	ResetWallClimbInformation(PreviousMovementMode, PreviousCustomMode);
 	HandleInAirLogic();
 
 	// Update player state
@@ -381,7 +393,7 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 		return;
 	}
 	
-	if (PrevWallClimbTime + WallClimbDuration < Time)
+	if (WallClimbStartTime + WallClimbDuration < Time)
 	{
 		SetMovementMode(MOVE_Falling);
 		StartNewPhysics(deltaTime, Iterations);
@@ -450,7 +462,7 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 			if (Velocity.Z > AddWallClimbSpeedThreshold)
 			{
 				// if they aren't climbing don't add vertical speed, however add a multiplier for how much speed should be added, and limit it to their input
-				FVector WallClimbVector = FVector(AccelDir.X, AccelDir.Y, UKismetMathLibrary::MapRangeClamped(PlayerInput.X, 0, 1, 0, WallClimbMultiplier));
+				FVector WallClimbVector = FVector(AccelDir.X * WallClimbMultiplier.X, AccelDir.Y * WallClimbMultiplier.Y, UKismetMathLibrary::MapRangeClamped(PlayerInput.X, 0, 1, 0, WallClimbMultiplier.Z));
 				Velocity = FVector(Velocity + WallClimbVector * WallClimbAcceleration).GetClampedToSize(0, WallClimbSpeed);
 				Adjusted = Velocity * timeTick;
 			}
@@ -490,8 +502,6 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 			SetMovementMode(MOVE_Falling);
 		}
 	}
-
-	UE_LOGFMT(LogTemp, Log, " ");
 }
 
 
@@ -1476,7 +1486,7 @@ void UAdvancedMovementComponent::ExitSlide()
 #pragma region Wall Climbing
 bool UAdvancedMovementComponent::CanWallClimb() const
 {
-	if (WallClimbDuration + PrevWallClimbTime > Time) return false;
+	if (WallClimbInterval + PrevWallClimbTime > Time) return false;
 	if (PlayerInput.X < 0.1) return false;
 
 	return true;
@@ -1485,12 +1495,23 @@ bool UAdvancedMovementComponent::CanWallClimb() const
 
 void UAdvancedMovementComponent::EnterWallClimb(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode)
 {
+	WallClimbStartTime = Time;
 }
 
 
 void UAdvancedMovementComponent::ExitWallClimb()
 {
 	PrevWallClimbTime = Time;
+}
+
+
+void UAdvancedMovementComponent::ResetWallClimbInformation(const EMovementMode PrevMode, uint8 PrevCustomMode)
+{
+	if (PrevMode == MOVE_Walking)
+	{
+		PrevWallClimbTime = 0;
+		PrevWallClimbLocation = FVector();
+	}
 }
 #pragma endregion 
 

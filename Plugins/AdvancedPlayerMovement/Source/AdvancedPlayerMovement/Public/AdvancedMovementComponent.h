@@ -289,31 +289,32 @@ public:
 // Wall Climbing																													//
 //----------------------------------------------------------------------------------------------------------------------------------//
 protected:
-	/** The time wall running was previously activated during different physics logic */
-	UPROPERTY(BlueprintReadWrite) float WallClimbingActivationTime;
-
 	/** The duration the player is able to climb a wall. Setting this to zero means there is no duration */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "10")) float WallClimbDuration;
+
+	/** The interval between when a player is allowed to wall climb if they've already completed a climb */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "10")) float WallClimbInterval;
 	
 	/** The speed the player climbs the wall */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "1000")) float WallClimbSpeed = 200;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "1000")) float WallClimbSpeed;
 
 	/** The player's climb speed acceleration */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "1000")) float WallClimbAcceleration = 20;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "1000")) float WallClimbAcceleration;
 	
 	/** How much speed should factor into wall climbing vertically */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "1")) float WallClimbMultiplier = 1;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing") FVector WallClimbMultiplier;
 
 	/** The friction climbing a wall when a player comes from a falling state */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "10")) float WallClimbFriction = 2.5;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "10")) float WallClimbFriction;
 
 	/** If the player was previously falling, what speed do we start adding velocity from? */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMax = "0", ClampMax = "0")) float AddWallClimbSpeedThreshold = -10;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMax = "0", ClampMax = "0")) float AddWallClimbSpeedThreshold;
 
 	/** The previous location the player had started wall climbing */
 	UPROPERTY(BlueprintReadWrite) FVector PrevWallClimbLocation;
 
 	/** The previous time the player had completed a wall climb */
+	UPROPERTY(BlueprintReadWrite) float WallClimbStartTime;
 	UPROPERTY(BlueprintReadWrite) float PrevWallClimbTime;
 	
 	
@@ -586,8 +587,10 @@ protected:
 
 	/** Exit wall climb logic */
 	virtual void ExitWallClimb();
-	
 
+	/** Reset wall climb information based on specific states and movement modes */
+	virtual void ResetWallClimbInformation(EMovementMode PrevMode, uint8 PrevCustomMode);
+	
 	
 //------------------------------------------------------------------------------//
 // Custom FSavedMove related function											//

@@ -37,7 +37,7 @@ public class AdvancedPlayerMovement : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"Slate",
-				"SlateCore",
+				"SlateCore", "UnrealUSDWrapper",
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);

@@ -192,7 +192,6 @@ public:
 
 
 	- Frame combinations for things like slide boosting out of ledge jumps, and other scenarios
-	- Figure out a good way of keeping the client and server in sync with each other during frame important things 
 
 
 	- Things that don't need specific inputs to be achieved
@@ -210,8 +209,8 @@ public:
 	
 
 
-	// FLAG_Reserved_1 = 0x04,// Reserved for future use (be a rebel and use these anyways)
-	// FLAG_Reserved_2 = 0x08, // AirStrafeSwayPhysics
+	// FLAG_Reserved_1 = 0x04, // Reserved for future use (be a rebel and use these anyways)
+	// FLAG_Reserved_2 = 0x08, // Reserved for future use (be a rebel and use these anyways)
 	// FLAG_Custom_3 = 0x80, // WallJumping
 	// FLAG_Custom_2 = 0x40, // Aiming
 	// FLAG_Custom_1 = 0x20, // Mantling
@@ -235,7 +234,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Air Strafe", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "10"))
 	float AirStrafeRotationRate;
 
-	/** The raw strafe sway duration of inhibited movement after performing a wall jump. The character needs to update this, since they determine the start and stop of the strafe sway */
+	/** The raw strafe sway duration of inhibited movement after performing a wall jump */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "1"))
 	float StrafeSwayDuration;
 	
@@ -246,19 +245,25 @@ protected:
 	/** The rotation rate of the character that allows preserving the player's speed while turning. This is influenced by the character's current speed, so at higher speeds if they try strafing it'll slow them down */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Air Strafe", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "10"))
 	float StrafeSwayRotationRate;
+
+	/** Whether Air Strafe Sway physics are enabled. If this is true, the player doesn't slow down if they press inputs in the opposite direction of the player's current movement. */
+	UPROPERTY(BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Air Strafe") bool AirStrafeSwayPhysics;
 	
+	/** The time strafe sway was previously activated during different physics logic. */
+	UPROPERTY(BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Air Strafe") float StrafeSwayActivationTime;
+
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Wall Jumping																														//
 //----------------------------------------------------------------------------------------------------------------------------------//
 protected:
-	/** How much speed is gained during a wall jump */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump", meta=(UIMin = "-1000.0", UIMax = "1000.0"))
-	float WallJumpBoost;
+	/** The speed of wall jumps */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump", meta=(UIMin = "0", UIMax = "1000"))
+	float WallJumpSpeed;
 	
 	/** An additional velocity multiplier to adjust the wall jump's velocity gains */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump")
-	FVector WallJumpMultiplier;
+	FVector WallJumpBoost;
 	
 	/** How far away is a wall allowed to for the player to be able to wall jump against */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump", meta=(UIMin = "0", UIMax = "343"))
@@ -273,12 +278,54 @@ public:
 	/** The trajectory of the player when they wall jump. This is calculated in CalculateWallJumpTrajectory */
 	UPROPERTY(BlueprintReadWrite) FVector WallJumpVector;
 
-	/** The normal of the wall the player previously wall jumped from  */
+	/** Used to determine whether they're trying to perform multiple wall jumps before landing on the ground  */
 	UPROPERTY(BlueprintReadWrite) FVector PrevWallJumpNormal;
 
 	/** The location of the player the last time they were on the ground */
 	UPROPERTY(BlueprintReadWrite) FVector PreviousGroundLocation;
+
 	
+//----------------------------------------------------------------------------------------------------------------------------------//
+// Wall Climbing																													//
+//----------------------------------------------------------------------------------------------------------------------------------//
+protected:
+	/** The time wall running was previously activated during different physics logic */
+	UPROPERTY(BlueprintReadWrite) float WallClimbingActivationTime;
+
+	/** The duration the player is able to climb a wall. Setting this to zero means there is no duration */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "10")) float WallClimbDuration;
+	
+	/** The speed the player climbs the wall */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "1000")) float WallClimbSpeed = 200;
+
+	/** The player's climb speed acceleration */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "1000")) float WallClimbAcceleration = 20;
+	
+	/** How much speed should factor into wall climbing vertically */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "1")) float WallClimbMultiplier = 1;
+
+	/** The friction climbing a wall when a player comes from a falling state */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "10")) float WallClimbFriction = 2.5;
+
+	/** If the player was previously falling, what speed do we start adding velocity from? */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMax = "0", ClampMax = "0")) float AddWallClimbSpeedThreshold = -10;
+
+	/** The previous location the player had started wall climbing */
+	UPROPERTY(BlueprintReadWrite) FVector PrevWallClimbLocation;
+
+	/** The previous time the player had completed a wall climb */
+	UPROPERTY(BlueprintReadWrite) float PrevWallClimbTime;
+	
+	
+//----------------------------------------------------------------------------------------------------------------------------------//
+// Wall Running																														//
+//----------------------------------------------------------------------------------------------------------------------------------//
+protected:
+	/** The time wall running was previously activated during different physics logic. */
+	UPROPERTY(BlueprintReadWrite) float WallRunningActivationTime;
+
+	UPROPERTY(BlueprintReadWrite) float WallRunDuration;
+
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Sliding																															//
@@ -314,66 +361,6 @@ public:
 	
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
-// Mantling																															//
-//----------------------------------------------------------------------------------------------------------------------------------//
-protected:
-	/** Mantle Falling Settings */ // TODO: Refactor this to use root motion source, and curves for smooth interps
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting") float MantleInterpSpeed_Low = 6.0;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting") float MantleInterpSpeed_High = 4.0;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting") float VaultOverInterpSpeed = 7.0;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting") float FallingCatchInterpSpeed = 4.5;
-
-	/** How high does the character have to be for this to be a high mantle */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float MantleHighHeightThreshold = 145;
-
-	/** The height of the trace */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float MaxLedgeHeight = 264;
-
-	/** The bottom of the trace (how high off the ground this is) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float MinLedgeHeight = 10;
-
-	/** How far from the character should the traces be? */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float ReachDistance = 70;
-
-	/** The radius of the forwards and backwards traces */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float ForwardTraceRadius = 34;
-
-	/** The ledge trace -> (After finding a ledge there's another trace that goes from the character's top standing height down) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float DownwardTraceRadius = 34;
-	
-	/** Height offsets for different vault traces */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float VaultZOffset = 3.4;
-
-	/** An additional placement offset for the target vault location */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float CharacterPlacementZOffset = 0;
-
-	/** How far forward should we place the character on the ledge? */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float FootPlacementFromLedge = -15;
-
-	/** An additional offset for character's that are outside of the capsule component's radius */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float LedgeRoomHeightOffset = 0;
-	
-	/** An additional radius offset for character's that are outside of the capsule component's radius */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting|Configuration") float LedgeRoomRadiusOffset = 0;
-	
-	UPROPERTY(BlueprintReadWrite) FVector CapsuleComponentLocation;
-	UPROPERTY(BlueprintReadWrite) FVector LedgeImpactLocation;
-	UPROPERTY(BlueprintReadWrite) FVector LedgeImpactNormal;
-	UPROPERTY(BlueprintReadWrite) FVector CharacterStandingLocation;
-
-	UPROPERTY(BlueprintReadWrite) bool bMantleFromFall;
-	UPROPERTY(BlueprintReadWrite) EVaultType MantleType;
-	UPROPERTY(BlueprintReadWrite) UPrimitiveComponent* Ledge;
-	UPROPERTY(BlueprintReadWrite) FVector TargetMantleLocation;
-	UPROPERTY(BlueprintReadWrite) FRotator TargetMantleRotation;
-
-	/** Mantle durations vary with montages and blending, so this is in place for convenience and you'll have to adjust these manually */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Vaulting") TMap<EVaultType, F_VaultInformation> MantleInformation;
-	UPROPERTY(BlueprintReadWrite) FVector VaultStartLocation;
-	UPROPERTY(BlueprintReadWrite) float VaultStartTime;
-	
-	
-//----------------------------------------------------------------------------------------------------------------------------------//
 // Other																															//
 //----------------------------------------------------------------------------------------------------------------------------------//
 protected:
@@ -402,7 +389,10 @@ protected:
 	/** Debug network replication */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugNetworkReplication;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugWallClimb;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugWallRunning;
 
+	
 protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)") TEnumAsByte<ETraceTypeQuery> MovementChannel;
 	
@@ -430,9 +420,6 @@ public:
 
 	/** If the player is walking, nav walking, or sliding */
 	virtual bool IsMovingOnGround() const override;
-
-	/** If the player is mantling */
-	UFUNCTION(BlueprintCallable) virtual bool IsMantling() const;
 	
 	/** If the player is sliding */
 	UFUNCTION(BlueprintCallable) virtual bool IsSliding() const;
@@ -440,12 +427,20 @@ public:
 	/** If the player is running */
 	UFUNCTION(BlueprintCallable) virtual bool IsRunning() const;
 
+	/** Is the player is wall climbing */
+	UFUNCTION(BlueprintCallable) virtual bool IsWallClimbing() const;
+	
+	/** Is the player is wall running */
+	UFUNCTION(BlueprintCallable) virtual bool IsWallRunning() const;
+	
+	/** If the player is mantling */
+	UFUNCTION(BlueprintCallable) virtual bool IsMantling() const;
+
 	/** If the player is aiming */
 	UFUNCTION(BlueprintCallable) virtual bool IsAiming() const;
 
 	/** If the player is strafe swaying */
 	UFUNCTION(BlueprintCallable) virtual bool IsStrafeSwaying();
-
 
 	
 //------------------------------------------------------------------------------//
@@ -470,8 +465,6 @@ protected:
 	 */
 	virtual void OnMovementUpdated(float DeltaSeconds, const FVector& OldLocation, const FVector& OldVelocity) override;
 
-
-
 	
 //------------------------------------------------------------------------------//
 // Physics Functions															//
@@ -487,14 +480,20 @@ protected:
 	virtual void PhysSlide(float deltaTime, int32 Iterations);
 
 	/** @note Movement update functions should only be called through StartNewPhysics()*/
-	virtual void PhysCustom(float deltaTime, int32 Iterations) override;
-
-	/** @note Movement update functions should only be called through StartNewPhysics()*/
 	virtual void PhysFalling(float deltaTime, int32 Iterations) override;
 
 	/** @note Movement update functions should only be called through StartNewPhysics()*/
-	virtual void PhysVault(float deltaTime, int32 Iterations);
+	virtual void PhysWallClimbing(float deltaTime, int32 Iterations);
+
+	/** @note Movement update functions should only be called through StartNewPhysics()*/
+	virtual void PhysMantling(float deltaTime, int32 Iterations);
 	
+	/** @note Movement update functions should only be called through StartNewPhysics()*/
+	virtual void PhysWallRunning(float deltaTime, int32 Iterations);
+	
+	/** @note Movement update functions should only be called through StartNewPhysics()*/
+	virtual void PhysCustom(float deltaTime, int32 Iterations) override;
+
 	/** 
 	 * Updates Velocity and Acceleration based on the current state, applying the effects of friction and acceleration or deceleration. Does not apply gravity.
 	 * This is used internally during movement updates. Normally you don't need to call this from outside code, but you might want to use it for custom movement modes.
@@ -505,8 +504,6 @@ protected:
 	 * @param	BrakingDeceleration				deceleration applied when not accelerating, or when exceeding max velocity.
 	 */
 	virtual void CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration) override;
-
-
 
 	
 //------------------------------------------------------------------------------//
@@ -559,8 +556,6 @@ protected:
 	virtual void GroundMovementPhysics(float deltaTime, int32 Iterations);
 
 	
-
-	
 //------------------------------------------------------------------------------//
 // Slide Logic																	//
 //------------------------------------------------------------------------------//
@@ -577,44 +572,21 @@ protected:
 	virtual void ExitSlide();
 	
 	
-
-	
 //------------------------------------------------------------------------------//
-// Vault Logic																	//
+// WallClimb Logic																//
 //------------------------------------------------------------------------------//
 public:
-	/** Checks if there's an object that the player can vault or mantle over */
-	UFUNCTION(BlueprintCallable) virtual bool CheckIfSafeToVaultLedgeAndCaptureInformation();
+	/** Returns true if current movement state and wall is valid for climbing, and if the player trying to climb the wall */
+	UFUNCTION(BlueprintCallable) virtual bool CanWallClimb() const;
 
-	/** Gets the mantle type of the current mantle logic
-	 * @note this is not safe to call during other movement modes
-	 */
-	UFUNCTION(BlueprintCallable) virtual EVaultType GetVaultType();
-
-	/** Gets the mantle section for the current mantle */
-	virtual FName GetVaultSection();
-	
 	
 protected:
-	/** Enter vault logic */
-	virtual void StartVault(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode);
+	/** Enter wall climb logic */
+	virtual void EnterWallClimb(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode);
 
-	/** Exit vault logic */
-	virtual void ExitVault();
-
-	/** Get's the vault information for a specific mantle type */
-	virtual F_VaultInformation GetMantleInformation(const EVaultType Type) const;
+	/** Exit wall climb logic */
+	virtual void ExitWallClimb();
 	
-	/** Gets the vault's duration based on the mantle type */
-	virtual float GetMantleDuration(const EVaultType Type) const;
-
-	/** Gets the vault's float curve base on the mantle type */
-	virtual UCurveFloat* GetMantleCurve(const EVaultType Type) const;
-	
-	/** Gets the vault's interp speed based on the mantle type */
-	virtual float GetMantleInterpSpeed(const EVaultType Type) const;
-	
-
 
 	
 //------------------------------------------------------------------------------//
@@ -638,7 +610,7 @@ public:
 	{
 	public:
 		typedef FCharacterNetworkMoveData Super;
-		float MoveData_Time;
+		FVector MoveData_Time;
 		FVector_NetQuantize10 MoveData_Input;
 		
 		virtual void ClientFillNetworkMoveData(const FSavedMove_Character& ClientMove, ENetworkMoveType MoveType) override;
@@ -691,13 +663,12 @@ public:
 			FVector PlayerInput;
 		
 			// Without customizing the movement component these are the remaining flags for creating new functionality
-			uint8 SavedRequestToStartAirStrafeSwayPhysics : 1;
 			uint8 SavedRequestToStartWallJumping : 1;
 			uint8 SavedRequestToStartAiming : 1;
 			uint8 SavedRequestToStartMantling : 1;
 			uint8 SavedRequestToStartSprinting : 1;
 			//FLAG_Reserved_1 = 0x04, // Reserved for future use (be a rebel and use these anyways)
-			//FLAG_Reserved_2 = 0x08, // AirStrafeSwayPhysics
+			//FLAG_Reserved_2 = 0x08, // Reserved for future use (be a rebel and use these anyways)
 			//FLAG_Custom_3 = 0x80, // WallJumping
 			//FLAG_Custom_2 = 0x40, // Aiming
 			//FLAG_Custom_1 = 0x20, // Mantling
@@ -727,7 +698,6 @@ public:
 
 	// Custom movement information
 	UPROPERTY(BlueprintReadWrite) FVector PlayerInput; // VelocityOriented input values (Acceleration)
-	UPROPERTY(BlueprintReadWrite) uint8 AirStrafeSwayPhysics : 1; // Wall Jump strafing is the same logic as air strafing, but it doesn't let you move against the grain of the character's movement (this makes it easier to strafe out of)
 	UPROPERTY(BlueprintReadWrite) uint8 WallJumpPressed : 1;
 	UPROPERTY(BlueprintReadWrite) uint8 AimPressed : 1;
 	UPROPERTY(BlueprintReadWrite) uint8 Mantling : 1;
@@ -755,8 +725,8 @@ public:
 	UFUNCTION(BlueprintCallable) void StartWallJump();
 	UFUNCTION(BlueprintCallable) void StopWallJump();
 	
-	UFUNCTION(BlueprintCallable) void EnableStrafeSwayPhysics();
 	UFUNCTION(BlueprintCallable) void DisableStrafeSwayPhysics();
+	UFUNCTION(BlueprintCallable) void EnableStrafeSwayPhysics();
 
 	
 //------------------------------------------------------------------------------//
@@ -811,17 +781,32 @@ public:
 	/** Updates another components movement mode information by references */
 	virtual void UpdateExternalMovementModeInformation(EMovementMode& MovementModeRef, uint8& CustomMovementModeRef);
 	
+	/** Returns the player's current input */
+	UFUNCTION(BlueprintCallable) virtual FVector GetPlayerInput() const;
+
 	
 //------------------------------------------------------------------------------//
 // Utility																		//
 //------------------------------------------------------------------------------//
 public:
+	/**
+	 * Calculate slide vector along a surface.
+	 * Has special treatment when falling, to avoid boosting up slopes (calling HandleSlopeBoosting() in this case).
+	 *
+	 * @param Delta:	Attempted move.
+	 * @param HitTime:		Amount of move to apply (between 0 and 1).
+	 * @param Normal:	Normal opposed to movement. Not necessarily equal to Hit.Normal (but usually is).
+	 * @param Hit:		HitResult of the move that resulted in the slide.
+	 * @return			New deflected vector of movement.
+	 */
+	virtual FVector ComputeSlideVector(const FVector& Delta, const float HitTime, const FVector& Normal, const FHitResult& Hit) const override;
+	
 	/** Gets the ability system from the character component */
 	// UBaseAbilitySystem* GetAbilitySystem() const;
 
 	/** Logic to do once the in air state has been updated */
 	virtual void HandleInAirLogic();
-
+	
 	/** Util function for printing debug messages */
 	virtual void DebugGroundMovement(FString Message, FColor Color, bool DrawSphere = false);
 

@@ -9,10 +9,12 @@
 UENUM(BlueprintType)
 enum ECustomMovementMode
 {
-	MOVE_Custom_None			UMETA(DisplayName = "None"),
-	MOVE_Custom_Vault			UMETA(DisplayName = "Vaulting"),
-	MOVE_Custom_Slide			UMETA(DisplayName = "Slide"),
-	MOVE_Custom_MAX				UMETA(Hidden)
+	MOVE_Custom_None				UMETA(DisplayName = "None"),
+	MOVE_Custom_Slide				UMETA(DisplayName = "Slide"),
+	MOVE_Custom_WallClimbing		UMETA(DisplayName = "Wall Climbing"),
+	MOVE_Custom_Mantling			UMETA(DisplayName = "Mantling"),
+	MOVE_Custom_WallRunning			UMETA(DisplayName = "Wall Running"),
+	MOVE_Custom_MAX					UMETA(Hidden)
 };
 
 

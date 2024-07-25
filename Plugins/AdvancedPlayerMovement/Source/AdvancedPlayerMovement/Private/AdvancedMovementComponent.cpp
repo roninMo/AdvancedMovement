@@ -2,12 +2,9 @@
 
 
 #include "AdvancedMovementComponent.h"
-
 #include "UnrealUSDWrapper.h"
-#include "Character/BhopCharacter.h"
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
-
 #include "Kismet/KismetMathLibrary.h"
 #include "Kismet/KismetSystemLibrary.h"
 #include "Logging/StructuredLog.h"
@@ -55,18 +52,28 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	// Wall Jumping
 	WallJumpSpeed = 640;
 	WallJumpBoost = FVector(100, 100, 640);
+	WallJumpBoostDuringWallClimbs = FVector(200, 200, 640);
+	WallJumpBoostDuringWallRuns = FVector(640, 640, 1000);
 	WallJumpValidDistance = 45;
 	WallJumpHeightFromGroundThreshold = 64.0;
 
 	// Wall Climbing
 	WallClimbDuration = 2;
-	WallClimbInterval = 0.5;
-	WallClimbSpeed = 450;
+	WallClimbInterval = 0.64;
+	WallClimbSpeed = 340;
 	WallClimbAcceleration = 20;
 	WallClimbMultiplier = FVector(0.64, 0.64, 1);
 	WallClimbAcceptableAngle = 40;
 	WallClimbFriction = 2.5;
-	AddWallClimbSpeedThreshold = -10;
+	WallClimbAddSpeedThreshold = -10;
+
+	// WallRunning
+	WallRunDuration = 3.4;
+	WallRunSpeed = 740;
+	WallRunAcceleration = 400;
+	WallRunMultiplier = FVector(1, 1, 0);
+	WallRunSpeedThreshold = 600;
+	WallRunAcceptableAngleRadius = 30;
 	
 	// // CharacterMovement (General Settings)
 	MaxAcceleration = 1200; // Derived from the Acceleration values 
@@ -89,7 +96,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	BrakingDecelerationWalking = 200;
 	bSweepWhileNavWalking = true;
 	bCanWalkOffLedges = true;
-	bCanWalkOffLedgesWhenCrouching = false;
+	bCanWalkOffLedgesWhenCrouching = true;
 	bMaintainHorizontalGroundVelocity = false; 
 	bIgnoreBaseRotation = false;
 	PerchRadiusThreshold = 0;
@@ -175,6 +182,7 @@ float UAdvancedMovementComponent::GetMaxSpeed() const
 		if (AimPressed) return MaxWalkSpeed * AimSpeedMultiplier;
 		// if (Character->bWalking) return MaxWalkSpeed * WalkSpeedMultiplier;
 		if (IsSliding()) return SlideSpeedLimit; // TODO: Investigate crouching logic and it's behavior during air movement, and perhaps refactor this into the normal walking movement logic with physics adjustments similar to air strafe lurches
+		if (IsWallRunning()) return WallRunSpeed;
 		if (IsCrouching())
 		{
 			if (SprintPressed) return MaxWalkSpeedCrouched * CrouchSprintSpeedMultiplier;
@@ -216,12 +224,10 @@ void UAdvancedMovementComponent::UpdateCharacterStateBeforeMovement(const float 
 	if (Acceleration.Equals(FVector::ZeroVector, 0.01)) PlayerInput = FVector::ZeroVector;
 
 	// Handle Strafe sway duration
-	if (IsStrafeSwaying() && StrafeSwayActivationTime + StrafeSwayDuration <= Time)
+	if (IsStrafeSwaying() && StrafeSwayStartTime + StrafeSwayDuration <= Time)
 	{
 		DisableStrafeSwayPhysics();
 	}
-
-	// Handle wall run duration
 	
 	// Slide
 	if (IsCrouching() && !IsSliding() && CanSlide())
@@ -255,16 +261,19 @@ void UAdvancedMovementComponent::OnMovementModeChanged(EMovementMode PreviousMov
 	}
 	
 	// Handle exiting previous modes
-	if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_Slide) ExitSlide();
-	if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_WallClimbing) ExitWallClimb();
+	if		(PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_Slide) ExitSlide();
+	else if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_WallClimbing) ExitWallClimb();
+	else if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_WallRunning) ExitWallRun();
 
 	// Handle entering new modes
-	if (IsCustomMovementMode(MOVE_Custom_Slide)) EnterSlide(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
-	if (IsCustomMovementMode(MOVE_Custom_WallClimbing)) EnterWallClimb(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
+	if		(IsCustomMovementMode(MOVE_Custom_Slide)) EnterSlide(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
+	else if (IsCustomMovementMode(MOVE_Custom_WallClimbing)) EnterWallClimb(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
+	else if (IsCustomMovementMode(MOVE_Custom_WallRunning)) EnterWallRun(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
 
 	// State information
 	ResetWallJumpInformation(PreviousMovementMode, PreviousCustomMode);
 	ResetWallClimbInformation(PreviousMovementMode, PreviousCustomMode);
+	ResetWallRunInformation(PreviousMovementMode, PreviousCustomMode);
 	HandleInAirLogic();
 
 	// Update player state
@@ -416,31 +425,14 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 		bJustTeleported = false;
 
 		RestorePreAdditiveRootMotionVelocity();
-		const FVector OldVelocity = Velocity;
 		FVector AccelDir = Acceleration.GetSafeNormal();
+		const FVector OldVelocity = Velocity;
 		
 		// Check if the player is trying to wall jump
 		FHitResult JumpHit;
 		if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, FHitResult()))
 		{
-			CalculateWallJumpTrajectory(WallJumpVector, JumpHit);
-			EnableStrafeSwayPhysics();
-		
-			// Wall jump speeds should be static, and also save the player's current velocity
-			float CurrentSpeed = FVector(Velocity.X, Velocity.Y, 0).Size();
-			FVector RedirectedVelocity = FVector(WallJumpVector.X, WallJumpVector.Y, 0) * FMath::Max(CurrentSpeed, WallJumpSpeed);
-			Velocity = RedirectedVelocity + (WallJumpVector * WallJumpBoost);
-			PrevWallJumpNormal = JumpHit.ImpactNormal;
-
-			if (bDebugWallJump)
-			{
-				UE_LOGFMT(LogTemp, Warning, "Wall Jumped! Velocity: ({0}), OldVelocity: ({1}), RedirectedVelocity: ({2}), Boost: ({3}), CapturedSpeed: ({4})",
-					*Velocity.ToString(), *OldVelocity.ToString(), *RedirectedVelocity.ToString(), *(WallJumpVector * WallJumpBoost).ToString(), CurrentSpeed
-				);
-			}
-
-			SetMovementMode(MOVE_Falling);
-			StartNewPhysics(deltaTime, Iterations);
+			CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoostDuringWallClimbs);
 			return;
 		}
 		
@@ -453,6 +445,7 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 		}
 		
 		// Move forwards, up, and sideways if they're also moving to the side
+		FVector WallClimbVector = FVector();
 		if (!HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity())
 		{
 			if (Velocity.Z < 0)
@@ -460,10 +453,10 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 				ApplyVelocityBraking(timeTick, WallClimbFriction, GetMaxBrakingDeceleration());
 				Adjusted = Velocity * timeTick;
 			}
-			if (Velocity.Z > AddWallClimbSpeedThreshold)
+			if (Velocity.Z > WallClimbAddSpeedThreshold)
 			{
 				// if they aren't climbing don't add vertical speed, however add a multiplier for how much speed should be added, and limit it to their input
-				FVector WallClimbVector = FVector(AccelDir.X * WallClimbMultiplier.X, AccelDir.Y * WallClimbMultiplier.Y, UKismetMathLibrary::MapRangeClamped(PlayerInput.X, 0, 1, 0, WallClimbMultiplier.Z));
+				WallClimbVector = FVector(AccelDir.X * WallClimbMultiplier.X, AccelDir.Y * WallClimbMultiplier.Y, UKismetMathLibrary::MapRangeClamped(PlayerInput.X, 0, 1, 0, WallClimbMultiplier.Z));
 				Velocity = FVector(Velocity + WallClimbVector * WallClimbAcceleration).GetClampedToSize(0, WallClimbSpeed);
 				Adjusted = Velocity * timeTick;
 			}
@@ -500,12 +493,27 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 				return;
 			}
 
-			// Handle moving up and alongside the wall (and adding your own static logic that overrides the general behavior)
+			// Handle moving up and alongside the wall
 			HandleImpact(Hit, LastMoveTimeSlice, Adjusted);
 			FVector Delta = ComputeSlideVector(Adjusted, 1.f - Hit.Time, Hit.Normal, Hit);
 			SafeMoveUpdatedComponent(Delta, PawnRotation, true, Hit);
 			
-			UE_LOGFMT(LogTemp, Log, "Velocity: {0}, Adjusted: {1}, Delta: {2}, Angle: {3}", *Velocity.ToString(), *Adjusted.ToString(), *Delta.ToString(), Angle);
+			if (bDebugWallClimb)
+			{
+				UE_LOGFMT(LogTemp, Log, "{0}::WallClimb ({1}) ->  ({2})({3}) Adjusted: ({4}), Vel: ({5}), WallClimbVector: ({6}), PlayerInput: ({7}), Speed: ({8}), Acceleration: ({9}), Multiplier: ({10})",
+					CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
+					*FString::SanitizeFloat(WallClimbStartTime + WallClimbDuration - Time),
+					*FString::SanitizeFloat(Angle),
+					*FString::SanitizeFloat(Adjusted.Size2D()),
+					*Adjusted.ToString(),
+					*Velocity.ToString(),
+					*WallClimbVector.ToString(),
+					*PlayerInput.ToString(),
+					*FString::SanitizeFloat(WallClimbSpeed),
+					*FString::SanitizeFloat(WallClimbAcceleration),
+					*WallClimbMultiplier.ToString()
+				);
+			}
 		}
 		else
 		{
@@ -522,6 +530,134 @@ void UAdvancedMovementComponent::PhysMantling(float deltaTime, int32 Iterations)
 
 void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iterations)
 {
+	if (deltaTime < MIN_TICK_TIME)
+	{
+		return;
+	}
+	
+	if (WallRunStartTime + WallRunDuration < Time)
+	{
+		SetMovementMode(MOVE_Falling);
+		StartNewPhysics(deltaTime, Iterations);
+		return;
+	}
+	
+	// movement physics
+	float remainingTime = deltaTime;
+	while( (remainingTime >= MIN_TICK_TIME) && (Iterations < MaxSimulationIterations) )
+	{
+		Iterations++; 
+		float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
+		remainingTime -= timeTick;
+		
+		// save the current values
+		const FVector OldLocation = UpdatedComponent->GetComponentLocation();
+		const FQuat PawnRotation = UpdatedComponent->GetComponentQuat();
+		FVector Adjusted;
+		bJustTeleported = false;
+
+		RestorePreAdditiveRootMotionVelocity();
+		FVector AccelDir = Acceleration.GetSafeNormal();
+		const FVector OldVelocity = Velocity;
+		
+		// Check if the player is trying to wall jump
+		FHitResult JumpHit;
+		if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, FHitResult()))
+		{
+			CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoostDuringWallRuns);
+			return;
+		}
+
+		// if they move away or let go of the wall wall transition to air
+		if ((WallRunInputDirection < 0 && PlayerInput.Y > -0.1) || (WallRunInputDirection > 0 && PlayerInput.Y < 0.1))
+		{
+			SetMovementMode(MOVE_Falling);
+			StartNewPhysics(timeTick, Iterations);
+			return;
+		}
+		
+		// Move forwards and towards the wall to allow for traversing angled walls
+		FVector WallRunVector = FVector();
+		if (!HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity())
+		{
+			// Calculate the forward input based on the wall
+			const FRotator CharacterRotation(0, UpdatedComponent->GetComponentRotation().Yaw, 0);
+			FVector CharacterInput = (
+				// FVector(UKismetMathLibrary::GetForwardVector(CharacterRotation) * PlayerInput.X) +
+				FVector(UKismetMathLibrary::GetRightVector(CharacterRotation) * PlayerInput.Y)
+			).GetSafeNormal();
+
+			// Find which way the character should wall run
+			float WallDirection = WallRunNormal.Dot(UpdatedComponent->GetForwardVector()); // The impact normal of the wall is based on the current surface
+			float PlayerForwardsDirection = UpdatedComponent->GetForwardVector().Dot(WallRunWall->GetRightVector()); // The Get vectors of the wall are to help translate things in world space
+			FVector WallRunDirection = PlayerForwardsDirection < 0 ? WallRunWall->GetRightVector() * -1 : WallRunWall->GetRightVector();
+			if (bShouldRunBackwardsIfFacingAwayFromWall && WallDirection > 0) WallRunDirection *= -1;
+			WallRunVector = FVector(
+				FMath::Clamp(CharacterInput.X + WallRunDirection.X, -1, 1) * WallRunMultiplier.X,
+				FMath::Clamp(CharacterInput.Y + WallRunDirection.Y, -1, 1) * WallRunMultiplier.Y,
+				WallRunMultiplier.Z
+			);
+
+			// Don't exceed the max speed, but don't slow down current speeds
+			Velocity.Z = 0;
+			Velocity = FVector(Velocity + (WallRunVector * WallRunAcceleration)).GetClampedToSize(0, WallRunCurrentSpeed);
+			Adjusted = Velocity * timeTick;
+		}
+		
+		// check if there's a wall
+		FHitResult Hit(1.f);
+		SafeMoveUpdatedComponent(Adjusted, PawnRotation, true, Hit); // Moves based on adjusted, updates velocity, and handles returning colliding information for handling the different movement scenarios
+		if (Hit.IsValidBlockingHit())
+		{
+			float LastMoveTimeSlice = timeTick;
+			float subTimeTickRemaining = timeTick * (1.f - Hit.Time);
+			WallRunNormal = Hit.Normal;
+			WallRunWall = Hit.GetComponent();
+			
+			// if the character just landed on the ground
+			if (Hit.bBlockingHit && IsValidLandingSpot(UpdatedComponent->GetComponentLocation(), Hit))
+			{
+				remainingTime += subTimeTickRemaining;
+				ProcessLanded(Hit, remainingTime, Iterations);
+				return;
+			}
+			
+			// transition out of wall running if they aren't trying to wall run
+			const float Angle = 180 - UKismetMathLibrary::DegAcos(Hit.Normal.Dot(UpdatedComponent->GetForwardVector()));
+			if (Angle < 90 - WallRunAcceptableAngleRadius || Angle > 90 + WallRunAcceptableAngleRadius)
+			{
+				SetMovementMode(MOVE_Falling);
+				StartNewPhysics(timeTick, Iterations);
+				return;
+			}
+			
+			// Handle velocity calculations running alongside the wall
+			HandleImpact(Hit, LastMoveTimeSlice, Adjusted);
+			FVector Delta = ComputeSlideVector(Adjusted, 1.f - Hit.Time, Hit.Normal, Hit);
+			SafeMoveUpdatedComponent(Delta, PawnRotation, true, Hit);
+
+			if (bDebugWallRunning)
+			{
+				float AddedSpeed = Adjusted.Size2D();
+				UE_LOGFMT(LogTemp, Log, "{0}::WallRunning ({1}) ->  ({2})({3}) Adjusted: ({4}), Vel: ({5}), WallRunVector: ({6}), PlayerInput: ({7}), Angle: ({8}), SpeedCap: {9}, WallRunMultiplier: ({10})",
+					CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"), *FString::SanitizeFloat(WallRunStartTime + WallRunDuration - Time),
+					WallRunNormal.Dot(UpdatedComponent->GetRightVector()) < 0 ? *FString("L") : *FString("R"),
+					*FString::SanitizeFloat(AddedSpeed),
+					*Adjusted.ToString(),
+					*Velocity.ToString(),
+					*WallRunVector.ToString(),
+					*PlayerInput.ToString(),
+					*FString::SanitizeFloat(Angle),
+					*FString::SanitizeFloat(WallRunSpeed),
+					*WallRunMultiplier.ToString()
+				);
+			}
+		}
+		else
+		{
+			SetMovementMode(MOVE_Falling);
+		}
+	}
 }
 
 
@@ -643,6 +779,7 @@ void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, b
 			Duration, *GetMovementDirection(Input), *Velocity.GetSafeNormal2D().ToString(), *AccelDir.ToString(), *Input.ToString(), *UpdatedComponent->GetComponentRotation().ToString(), *MovementVelocity.ToString());
 		*/
 	}
+
 	
 	//--------------------------------------------------------------------------------------------------------------//
 	// Strafing / Bhopping physics																					//
@@ -670,23 +807,23 @@ void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, b
 	// MovementInput, Gain/Lose Speed, AddedVelocity, Velocity, AirSpeedCap, AirAccelMultiplier
 	if (bDebugAirStrafe || bDebugStrafeSway)
 	{
-		if (AirStrafeSwayPhysics && !bDebugStrafeSway) return;
-		if (!AirStrafeSwayPhysics && !bDebugAirStrafe) return;
+		if (AirStrafeSwayPhysics && !bDebugStrafeSway) return; // Only debug strafe sway
+		if (!AirStrafeSwayPhysics && !bDebugAirStrafe) return; // Only debug air strafe 
 		
 		UE_LOGFMT(LogTemp, Log, "{0}::{1} ({2}) ->  ({3})({4}) ProjectedVel: ({5}), AddedVel: ({6}), Velocity: ({7}), Speed: ({8}), AddedSpeed: ({9}), AccelDir: {10}, Cap: ({11}), AccelMultiplier: ({12})",
 			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
-			IsStrafeSwaying() ? *FString("Strafe_Sway") : *FString("Air_Strafe"),
-			IsStrafeSwaying() ? *FString::SanitizeFloat(StrafeSwayDuration) : *FString(""),
+			IsStrafeSwaying() ? *FString("Strafe_Sway") : FString("Air_Strafe"),
+			IsStrafeSwaying() ? *FString::SanitizeFloat(StrafeSwayStartTime + StrafeSwayDuration - Time) : *FString(""),
 			*GetMovementDirection(PlayerInput),
 			ProjVelocity < AirSpeedCap ? FString("+") : FString("-"), // I don't know if this is accurate, just that strafing adds velocity  when the projected velocity is below 0 (and without strafing this value is the player's speed)
-			ProjVelocity,
+			*FString::SanitizeFloat(ProjVelocity),
 			*AddedVelocity.GetSafeNormal2D().ToString(),
 			*Velocity.GetSafeNormal2D().ToString(),
 			FMath::CeilToInt(FVector(Velocity.X, Velocity.Y, 0).Size()),
-			AddSpeed,
+			*FString::SanitizeFloat(AddSpeed),
 			*FVector2D(AccelDir.X, AccelDir.Y).ToString(),
 			FMath::CeilToInt(AirSpeedCap),
-			AirAccelerationMultiplier
+			*FString::SanitizeFloat(AirAccelerationMultiplier)
 		);
 	}
 }
@@ -831,25 +968,12 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 	FHitResult JumpHit;
 	if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, Hit))
 	{
-		CalculateWallJumpTrajectory(WallJumpVector, JumpHit);
-		EnableStrafeSwayPhysics();
-		
-		// Wall jump speeds should be static, and also save the player's current velocity
-		float CurrentSpeed = FVector(Velocity.X, Velocity.Y, 0).Size();
-		FVector RedirectedVelocity = FVector(WallJumpVector.X, WallJumpVector.Y, 0) * FMath::Max(CurrentSpeed, WallJumpSpeed);
-		Velocity = RedirectedVelocity + (WallJumpVector * WallJumpBoost);
-		PrevWallJumpNormal = JumpHit.ImpactNormal;
-
-		if (bDebugWallJump)
-		{
-			UE_LOGFMT(LogTemp, Warning, "Wall Jumped! Velocity: ({0}), OldVelocity: ({1}), RedirectedVelocity: ({2}), Boost: ({3}), CapturedSpeed: ({4})",
-				*Velocity.ToString(), *OldVelocity.ToString(), *RedirectedVelocity.ToString(), *(WallJumpVector * WallJumpBoost).ToString(), CurrentSpeed
-			);
-		}
+		CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoost);
+		return;
 	}
 	
 	// Handle impact deflections
-	else if ( Hit.bBlockingHit )
+	if ( Hit.bBlockingHit )
 	{
 		// Compute impact deflection based on final velocity, not integration step.
 		// This allows us to compute a new velocity from the deflected vector, and ensures the full gravity effect is included in the slide result.
@@ -880,10 +1004,14 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 		}
 		
 		// Wall Run
-		else if (PlayerInput.Y > 0.1 || PlayerInput.Y < -0.1)
+		const float Speed = Velocity.Size2D();
+		if (CanWallRun() && Speed > WallRunSpeedThreshold && Angle > 90 - WallRunAcceptableAngleRadius && Angle < 90 + WallRunAcceptableAngleRadius)
 		{
-			// SetMovementMode(MOVE_Custom, MOVE_Custom_WallRunning);
-			// StartNewPhysics(deltaTime, Iterations);
+			WallRunWall = Hit.GetComponent();
+			WallRunNormal = Hit.Normal;
+			WallRunLocation = Hit.Location;
+			SetMovementMode(MOVE_Custom, MOVE_Custom_WallRunning);
+			StartNewPhysics(deltaTime, Iterations);
 		}
 
 		
@@ -1088,12 +1216,12 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 		MovementChannel,
 		false,
 		CharacterActors,
-		bDebugWallJump ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		bDebugWallJumpTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
 		JumpHit,
 		true,
 		FColor::Emerald,
 		FColor::Blue,
-		5
+		3
 	);
 
 	if (!JumpHit.bBlockingHit)
@@ -1105,12 +1233,12 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 			MovementChannel,
 			false,
 			CharacterActors,
-			bDebugWallJump ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+			bDebugWallJumpTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
 			JumpHit,
 			true,
 			FColor::Cyan,
 			FColor::Blue,
-			5
+			3
 		);
 
 		if (!JumpHit.bBlockingHit)
@@ -1124,7 +1252,7 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 		return false;
 	}
 
-	if (bDebugWallJump)
+	if (bDebugWallJumpTrace)
 	{
 		DrawDebugBox(
 			GetWorld(),
@@ -1132,7 +1260,7 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 			FVector(5),
 			FColor::Emerald,
 			false,
-			5
+			3
 		);
 	}
 	
@@ -1140,7 +1268,7 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 }
 
 
-void UAdvancedMovementComponent::CalculateWallJumpTrajectory(FVector& WallJump, const FHitResult& Wall)
+void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector Boost)
 {
 	// The velocity calculation happens when the character is already sliding alongside the wall, and we need a calculation that's net safe for handling every scenario safely
 	const FVector WallLocation = FVector(Wall.ImpactPoint.X, Wall.ImpactPoint.Y, 0);
@@ -1150,7 +1278,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(FVector& WallJump, 
 	// Calculate the trajectory
 	const FVector CharacterTrajectory = (WallLocation - PrevLocation).GetSafeNormal2D();
 	const float WallAngle = Wall.ImpactNormal.Dot(CharacterTrajectory); // -0.5 or greater is 45^ or less
-	WallJump = (CharacterTrajectory - 2 * (CharacterTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
+	FVector WallJump = (CharacterTrajectory - 2 * (CharacterTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
 	
 	// Check if the previous ground location is behind the wall location using the normal, if so fix the trajectory so it doesn't create the wrong walljumps
 	if (WallAngle > 0)
@@ -1160,7 +1288,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(FVector& WallJump, 
 		const FVector WallJumpTrajectory = (WallLocation - (LocationAlignedToWall + (Wall.ImpactNormal * DistanceFromWall))).GetSafeNormal();
 		WallJump = (WallJumpTrajectory - 2 * (WallJumpTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
 
-		if (bDebugWallJump)
+		if (bDebugWallJumpTrajectory)
 		{
 			DrawDebugBox(GetWorld(), LocationAlignedToWall, FVector(10), FColor::Red, false, 5);
 			DrawDebugBox(GetWorld(), LocationAlignedToWall + Wall.ImpactNormal * DistanceFromWall, FVector(10), FColor::Orange, false, 5);
@@ -1170,7 +1298,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(FVector& WallJump, 
 	else if (WallAngle > -0.45)
 	{
 		WallJump = (Velocity.GetSafeNormal2D() - Wall.ImpactNormal) / 2 + Wall.ImpactNormal;
-		if (bDebugWallJump) UE_LOGFMT(LogTemp, Log, "AlongsideWallJump: {0}, Velocity: {1}, ImpactNormal: {2}, WallAngle: {3}", *WallJump.ToString(), *Velocity.GetSafeNormal2D().ToString(), *Wall.ImpactNormal.ToString(), WallAngle);
+		if (bDebugWallJumpTrajectory) UE_LOGFMT(LogTemp, Log, "AlongsideWallJump: {0}, Velocity: {1}, ImpactNormal: {2}, WallAngle: {3}", *WallJump.ToString(), *Velocity.GetSafeNormal2D().ToString(), *Wall.ImpactNormal.ToString(), WallAngle);
 	}
 
 	// Wall jump Z velocity
@@ -1182,9 +1310,30 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(FVector& WallJump, 
 		WallJump = FVector(WallJump.X, WallJump.Y, 0.25);
 	}
 
-	if (bDebugWallJump)
+	
+	// Wall jump calculations. Their speeds should be static, and also save the player's current velocity
+	const float CurrentSpeed = FVector(Velocity.X, Velocity.Y, 0).Size();
+	const FVector RedirectedVelocity = FVector(WallJump.X, WallJump.Y, 0) * FMath::Max(CurrentSpeed, Speed);
+	Velocity = RedirectedVelocity + (WallJump * Boost);
+	PrevWallJumpNormal = Wall.ImpactNormal;
+	
+	SetMovementMode(MOVE_Falling);
+	StartNewPhysics(TimeTick, Iterations);
+	EnableStrafeSwayPhysics();
+	
+	if (bDebugWallJumpTrajectory)
 	{
-		// UE_LOGFMT(LogTemp, Warning, "Velocity: {0}, Acceleration: {1}, WallNormal: {2}, WallLocation: {3}, PrevLocation: {4}", *Velocity.ToString(), *Acceleration.ToString(), *Wall.ImpactNormal.ToString(), *WallLocation.ToString(), *PrevLocation.ToString());
+		UE_LOGFMT(LogTemp, Log, "{0}::WallJump ({1}) ->  ({2})({3}) RedirectedVel: ({4}), Vel: ({5}), Boost: ({6}), CapturedSpeed: ({7})",
+			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
+			*FString::SanitizeFloat(Time),
+			*GetMovementDirection(PlayerInput),
+			*FString::SanitizeFloat(Speed),
+			*RedirectedVelocity.ToString(),
+			*Velocity.ToString(),
+			*Boost.ToString(),
+			*FString::SanitizeFloat(CurrentSpeed)
+		);
+		
 		DrawDebugBox(GetWorld(), PreviousGroundLocation, FVector(10), FColor::Blue, false, 5);
 		DrawDebugLine(GetWorld(), UpdatedComponent->GetComponentLocation(), UpdatedComponent->GetComponentLocation() + (WallJump * 250), FColor::Red, false, 5);
 	}
@@ -1484,9 +1633,9 @@ void UAdvancedMovementComponent::ExitSlide()
 
 
 //------------------------------------------------------------------------------//
-// WallClimb Logic																//
+// WallRun Logic																//
 //------------------------------------------------------------------------------//
-#pragma region Wall Climbing
+#pragma region Wall Running
 bool UAdvancedMovementComponent::CanWallClimb() const
 {
 	if (WallClimbInterval + PrevWallClimbTime > Time) return false;
@@ -1514,6 +1663,43 @@ void UAdvancedMovementComponent::ResetWallClimbInformation(const EMovementMode P
 	{
 		PrevWallClimbTime = 0;
 		PrevWallClimbLocation = FVector();
+	}
+}
+#pragma endregion 
+
+
+
+
+//------------------------------------------------------------------------------//
+// WallRun Logic																//
+//------------------------------------------------------------------------------//
+#pragma region Wall Climbing
+bool UAdvancedMovementComponent::CanWallRun() const
+{
+	if (PlayerInput.Y < 0.1 && PlayerInput.Y > -0.1) return false;
+	// It needs to be a different wall
+	// If it's the same wall, it needs to be at a lower height
+	return true;
+}
+
+void UAdvancedMovementComponent::EnterWallRun(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode)
+{
+	WallRunCurrentSpeed = WallRunSpeed > Velocity.Size2D() ? WallRunSpeed : Velocity.Size2D();
+	WallRunInputDirection = PlayerInput.Y;
+	WallRunStartTime = Time;
+}
+
+void UAdvancedMovementComponent::ExitWallRun()
+{
+}
+
+void UAdvancedMovementComponent::ResetWallRunInformation(EMovementMode PrevMode, uint8 PrevCustomMode)
+{
+	if (PrevMode == MOVE_Walking)
+	{
+		WallRunStartTime = 0;
+		WallRunLocation = FVector();
+		WallRunNormal = FVector();
 	}
 }
 #pragma endregion 
@@ -1699,7 +1885,7 @@ void UAdvancedMovementComponent::StopWallJump() { WallJumpPressed = false; }
 void UAdvancedMovementComponent::DisableStrafeSwayPhysics() { AirStrafeSwayPhysics = false; }
 void UAdvancedMovementComponent::EnableStrafeSwayPhysics()
 {
-	StrafeSwayActivationTime = Time;
+	StrafeSwayStartTime = Time;
 	AirStrafeSwayPhysics = true;
 }
 #pragma endregion

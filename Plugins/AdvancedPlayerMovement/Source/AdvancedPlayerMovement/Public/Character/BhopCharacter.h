@@ -32,6 +32,9 @@ protected:
 public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite) FVector WallClimbVelocity;
 	UFUNCTION(BlueprintImplementableEvent) void BP_WallClimbCalcVelocity(float DeltaTime, FVector Velocity, FVector Acceleration, FVector Input);
+
+	
+	UFUNCTION(BlueprintImplementableEvent) void BP_WallRunLogic(float DeltaTime, FVector Velocity, FVector Acceleration, FVector Input, const FHitResult& HitResult);
 	
 	
 };

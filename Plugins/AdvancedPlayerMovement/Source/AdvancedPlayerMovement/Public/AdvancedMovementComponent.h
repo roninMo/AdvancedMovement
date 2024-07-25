@@ -249,7 +249,7 @@ protected:
 	UPROPERTY(BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Air Strafe") bool AirStrafeSwayPhysics;
 	
 	/** The time strafe sway was previously activated during different physics logic. */
-	UPROPERTY(BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Air Strafe") float StrafeSwayActivationTime;
+	UPROPERTY(BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Air Strafe") float StrafeSwayStartTime;
 
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
@@ -263,6 +263,14 @@ protected:
 	/** An additional velocity multiplier to adjust the wall jump's velocity gains */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump")
 	FVector WallJumpBoost;
+
+	/** An additional velocity multiplier during wall climbs to adjust the wall jump's velocity gains */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump")
+	FVector WallJumpBoostDuringWallClimbs;
+	
+	/** An additional velocity multiplier during wall runs to adjust the wall jump's velocity gains */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump")
+	FVector WallJumpBoostDuringWallRuns;
 	
 	/** How far away is a wall allowed to for the player to be able to wall jump against */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump", meta=(UIMin = "0", UIMax = "343"))
@@ -274,21 +282,18 @@ protected:
 
 
 public:
-	/** The trajectory of the player when they wall jump. This is calculated in CalculateWallJumpTrajectory */
-	UPROPERTY(BlueprintReadWrite) FVector WallJumpVector;
-
 	/** Used to determine whether they're trying to perform multiple wall jumps before landing on the ground  */
 	UPROPERTY(BlueprintReadWrite) FVector PrevWallJumpNormal;
 
 	/** The location of the player the last time they were on the ground */
 	UPROPERTY(BlueprintReadWrite) FVector PreviousGroundLocation;
 
-	
+
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Wall Climbing																													//
 //----------------------------------------------------------------------------------------------------------------------------------//
 protected:
-	/** The duration the player is able to climb a wall. Setting this to zero means there is no duration */
+	/** The duration the player is able to climb a wall. Setting this to zero means there is no duration */ // TODO: add this code
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "10")) float WallClimbDuration;
 
 	/** The interval between when a player is allowed to wall climb if they've already completed a climb */
@@ -310,13 +315,15 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "10")) float WallClimbFriction;
 
 	/** If the player was previously falling, what speed do we start adding velocity from? */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMax = "0", ClampMax = "0")) float AddWallClimbSpeedThreshold;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMax = "0", ClampMax = "0")) float WallClimbAddSpeedThreshold;
 
 	/** The previous location the player had started wall climbing */
 	UPROPERTY(BlueprintReadWrite) FVector PrevWallClimbLocation;
 
-	/** The previous time the player had completed a wall climb */
+	/** When the player had began climbing */
 	UPROPERTY(BlueprintReadWrite) float WallClimbStartTime;
+	
+	/** The previous time the player had completed a wall climb */
 	UPROPERTY(BlueprintReadWrite) float PrevWallClimbTime;
 	
 	
@@ -324,11 +331,48 @@ protected:
 // Wall Running																														//
 //----------------------------------------------------------------------------------------------------------------------------------//
 protected:
-	/** The time wall running was previously activated during different physics logic. */
-	UPROPERTY(BlueprintReadWrite) float WallRunningActivationTime;
+	/** The duration the player is able to run alongside a wall. Setting this to zero means there is no duration */ // TODO: add this code
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Running", meta=(UIMin = "0", UIMax = "10")) float WallRunDuration;
 
-	UPROPERTY(BlueprintReadWrite) float WallRunDuration;
+	/** The speed the player runs alongside the wall */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Running", meta=(UIMin = "0", UIMax = "1000")) float WallRunSpeed;
 
+	/** The player's wall run acceleration */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Running", meta=(UIMin = "0", UIMax = "1000")) float WallRunAcceleration;
+	
+	/** How much speed should factor into wall running forwards/sideways/up @remarks We're computing the player's velocity with both input directions when they push against the wall, so that is probably affects the speed */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Running") FVector WallRunMultiplier;
+	
+	/** How quickly the character should be moving before they're allowed to wall run */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Running", meta=(UIMin = "0", UIMax = "1000")) float WallRunSpeedThreshold;
+
+	/** The acceptable angle the character can be facing while running alongside a wall. ex: 30 -> 90-30 to 90+30  */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Running", meta=(UIMin = "0", UIMax = "90")) float WallRunAcceptableAngleRadius;
+
+	/** The trace distance for wall run checks */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Running", meta=(UIMin = "0", UIMax = "100")) float WallRunTraceDistance;
+
+	/** Whether the player should run backwards when facing away from the wall during a wall run */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Running") bool bShouldRunBackwardsIfFacingAwayFromWall;
+
+	/** When did they begin wall running? */
+	UPROPERTY(BlueprintReadWrite) float WallRunStartTime;
+
+	/** The input direction the player is pressing to run alongside a wall. This helps with knowing when to transition and if they're running left or right */
+	UPROPERTY(BlueprintReadWrite) float WallRunInputDirection;
+
+	/** The speed of the wall run. This is either capped to the wall run speed, or the speed they were going before they were wall running if they were going faster */
+	UPROPERTY(BlueprintReadWrite) float WallRunCurrentSpeed;
+	
+	/** The wall run location, we don't want them running on the same wall multiple times, unless it's at a different height */
+	UPROPERTY(BlueprintReadWrite) FVector WallRunLocation;
+
+	/** The wall the player is running on */
+	UPROPERTY(BlueprintReadWrite) UPrimitiveComponent* WallRunWall;
+	
+	/** The wall run's normal. This helps with knowing which way to add velocity, and if they run on the same wall at the same height, it needs to be at a different acceptable angle */
+	UPROPERTY(BlueprintReadWrite) FVector WallRunNormal;
+	
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Sliding																															//
@@ -367,8 +411,11 @@ protected:
 // Other																															//
 //----------------------------------------------------------------------------------------------------------------------------------//
 protected:
-	/** Debug wall jump checks and trajectories */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement: Debugging") bool bDebugWallJump;
+	/** Debug wall jump checks */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement: Debugging") bool bDebugWallJumpTrace;
+
+	/** Debug wall jump trajectories */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement: Debugging") bool bDebugWallJumpTrajectory;
 
 	/** Debug air strafing */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement: Debugging") bool bDebugAirStrafe;
@@ -532,8 +579,16 @@ protected:
 	 */
 	virtual bool WallJumpValid(float deltaTime, const FVector& OldLocation, const FVector& InputVector, FHitResult& JumpHit, const FHitResult& Hit); 
 	
-	/** Adds wall jump velocity */
-	virtual void CalculateWallJumpTrajectory(FVector& WallJump, const FHitResult& Wall);
+	/**
+	 * Calculates the wall jump trajectory and performs the wall jump. Always invoke WallJumpValid() before calculating the trajectory
+	 *
+	 * @param Wall				The wall they're jumping off of
+	 * @param TimeTick			The current time tick
+	 * @param Iterations		The current physics step iteration
+	 * @param Speed				The speed of the wall jump
+	 * @param Boost				The speed multiplier for the wall jump
+	 */
+	virtual void CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector Boost);
 
 	/** Captures information for wall jumping during different movement modes when the movement mode has been updated */
 	virtual void ResetWallJumpInformation(EMovementMode PrevMode, uint8 PrevCustomMode);
@@ -592,6 +647,25 @@ protected:
 
 	/** Reset wall climb information based on specific states and movement modes */
 	virtual void ResetWallClimbInformation(EMovementMode PrevMode, uint8 PrevCustomMode);
+	
+	
+//------------------------------------------------------------------------------//
+// WallClimb Logic																//
+//------------------------------------------------------------------------------//
+public:
+	/** Returns true if current movement state and wall is valid for running, and if the player trying to wall run */
+	UFUNCTION(BlueprintCallable) virtual bool CanWallRun() const;
+
+	
+protected:
+	/** Enter wall run logic */
+	virtual void EnterWallRun(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode);
+
+	/** Exit wall run logic */
+	virtual void ExitWallRun();
+
+	/** Reset wall run information based on specific states and movement modes */
+	virtual void ResetWallRunInformation(EMovementMode PrevMode, uint8 PrevCustomMode);
 	
 	
 //------------------------------------------------------------------------------//

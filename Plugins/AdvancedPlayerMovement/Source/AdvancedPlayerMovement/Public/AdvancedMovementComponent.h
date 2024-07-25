@@ -160,11 +160,11 @@ class UAdvancedMovementComponent : public UCharacterMovementComponent
 // Movement																															//
 //----------------------------------------------------------------------------------------------------------------------------------//
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Speed Multipliers") float SprintSpeedMultiplier;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Speed Multipliers") float CrouchSprintSpeedMultiplier;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Speed Multipliers") float AimSpeedMultiplier;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Speed Multipliers") float WalkSpeedMultiplier;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Speed Multipliers") float SlideSpeedLimit;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|General") float SprintSpeedMultiplier;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|General") float CrouchSprintSpeedMultiplier;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|General") float AimSpeedMultiplier;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|General") float WalkSpeedMultiplier;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|General") float SlideSpeedLimit;
 
 	
 //----------------------------------------------------------------------------------------------------------------------------------//

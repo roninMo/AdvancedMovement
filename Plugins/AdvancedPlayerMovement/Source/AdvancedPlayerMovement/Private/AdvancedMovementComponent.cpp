@@ -35,16 +35,16 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 
 	// Bunny hopping
 	StrafingMaxAcceleration = 6400;
-	AirStrafeSpeedGainMultiplier = 1.45;
-	AirStrafeRotationRate = 2.64;
+	AirStrafeSpeedGainMultiplier = 1.64;
+	AirStrafeRotationRate = 3;
 
 	// Strafe Swaying
-	StrafeSwayDuration = 0.1;
+	StrafeSwayDuration = 0.2;
 	StrafeSwaySpeedGainMultiplier = 1;
-	StrafeSwayRotationRate = 6.4;
+	StrafeSwayRotationRate = 3;
 
 	// Sliding
-	SlideEnterThreshold = 450;
+	SlideEnterThreshold = 600;
 	SlideEnterImpulse = 450;
 	SlidingRotationRate = 1;
 	SlidingFriction = 1;
@@ -54,16 +54,17 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 
 	// Wall Jumping
 	WallJumpSpeed = 640;
-	WallJumpBoost = FVector(100, 100, 74);
+	WallJumpBoost = FVector(100, 100, 640);
 	WallJumpValidDistance = 45;
 	WallJumpHeightFromGroundThreshold = 64.0;
 
 	// Wall Climbing
 	WallClimbDuration = 2;
-	WallClimbInterval = 0.64;
-	WallClimbSpeed = 200;
+	WallClimbInterval = 0.5;
+	WallClimbSpeed = 450;
 	WallClimbAcceleration = 20;
 	WallClimbMultiplier = FVector(0.64, 0.64, 1);
+	WallClimbAcceptableAngle = 40;
 	WallClimbFriction = 2.5;
 	AddWallClimbSpeedThreshold = -10;
 	
@@ -489,13 +490,22 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 			{
 				
 			}
+			
+			// transition out of wall climbing if they aren't trying to climb the wall
+			const float Angle = 180 - UKismetMathLibrary::DegAcos(Hit.Normal.Dot(UpdatedComponent->GetForwardVector()));
+			if (Angle > WallClimbAcceptableAngle)
+			{
+				SetMovementMode(MOVE_Falling);
+				StartNewPhysics(timeTick, Iterations);
+				return;
+			}
 
 			// Handle moving up and alongside the wall (and adding your own static logic that overrides the general behavior)
 			HandleImpact(Hit, LastMoveTimeSlice, Adjusted);
 			FVector Delta = ComputeSlideVector(Adjusted, 1.f - Hit.Time, Hit.Normal, Hit);
 			SafeMoveUpdatedComponent(Delta, PawnRotation, true, Hit);
 			
-			UE_LOGFMT(LogTemp, Log, "Velocity: {0}, Adjusted: {1}, Delta: {2}", *Velocity.ToString(), *Adjusted.ToString(), *Delta.ToString());
+			UE_LOGFMT(LogTemp, Log, "Velocity: {0}, Adjusted: {1}, Delta: {2}, Angle: {3}", *Velocity.ToString(), *Adjusted.ToString(), *Delta.ToString(), Angle);
 		}
 		else
 		{
@@ -858,18 +868,11 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 				return;
 			}
 		}
-		
-		// Calculate the trajectory // TODO: For accurate traces do additional forward and side traces to handle wall climbing and running
-		const FVector CharacterTrajectory = (Hit.Location - UpdatedComponent->GetComponentLocation()).GetSafeNormal2D();
-		const float Angle = UpdatedComponent->GetForwardVector().Dot(CharacterTrajectory); // -0.5 or greater is 45^ or less
 
-		// if (bDebugWallClimb || bDebugWallRunning)
-		// {
-		// 	UE_LOGFMT(LogTemp, Log, "Angle: {0}, Location: {1}, Wall: {2}, Trajectory: {3}", Angle, *OldLocation.ToString(), *Hit.ImpactPoint.ToString(), *CharacterTrajectory.ToString());
-		// }
 		
 		// Wall Climb
-		if (CanWallClimb() && Angle > 0.5) // 0-45 towards the wall
+		const float Angle = 180 - UKismetMathLibrary::DegAcos(Hit.Normal.Dot(UpdatedComponent->GetForwardVector()));
+		if (CanWallClimb() && Angle < WallClimbAcceptableAngle)
 		{
 			PrevWallClimbLocation = Hit.Location;
 			SetMovementMode(MOVE_Custom, MOVE_Custom_WallClimbing);
@@ -883,9 +886,9 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 			// StartNewPhysics(deltaTime, Iterations);
 		}
 
-		HandleImpact(Hit, LastMoveTimeSlice, Adjusted);
 		
 		// If we've changed physics mode, abort.
+		HandleImpact(Hit, LastMoveTimeSlice, Adjusted);
 		if (!HasValidData() || !IsFalling())
 		{
 			return;

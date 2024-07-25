@@ -191,7 +191,7 @@ public:
 	- Ledge Jumping
 
 
-	- Frame combinations for things like slide boosting out of ledge jumps, and other scenarios
+	- Frame combinations for things like slide boosting out of ledge jumps, and other scenarios, and check that this is safe with different frame rates
 
 
 	- Things that don't need specific inputs to be achieved
@@ -203,9 +203,8 @@ public:
 		- Sliding
 		- Ledge Climbing
 
-	- Wall jumps need AirStrafeSwayPhysics
-	- We need an input for wall jumps and ledge jumps
-	- Why don't we allow extra speed while strafing if they press the jump input? Or figure out a good way of handling strafing during different states
+	- Wall jumps need AirStrafeSwayPhysics, and add StrafeLurching during ledge jumps
+	- Why don't we allow extra strafing if they press the jump input? Or figure out a good way of handling strafing during different states
 	
 
 
@@ -235,7 +234,7 @@ protected:
 	float AirStrafeRotationRate;
 
 	/** The raw strafe sway duration of inhibited movement after performing a wall jump */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Wall Jump", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement: Jumping / Falling|Air Strafe", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "1"))
 	float StrafeSwayDuration;
 	
 	/** Speed gained during strafe is tied to the character's acceleration, and this multiplies how much is gained during a strafe */
@@ -301,9 +300,12 @@ protected:
 	/** The player's climb speed acceleration */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "1000")) float WallClimbAcceleration;
 	
-	/** How much speed should factor into wall climbing vertically */
+	/** How much speed should factor into wall climbing forwards/sideways/up */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing") FVector WallClimbMultiplier;
 
+	/** Up to what angle is wall climbing allowed? */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "90")) float WallClimbAcceptableAngle;
+	
 	/** The friction climbing a wall when a player comes from a falling state */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Wall Climbing", meta=(UIMin = "0", UIMax = "10")) float WallClimbFriction;
 

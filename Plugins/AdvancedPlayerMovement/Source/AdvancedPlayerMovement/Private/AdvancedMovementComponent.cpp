@@ -31,6 +31,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	SlideSpeedLimit = 9000.0;
 
 	// Bunny hopping
+	bEnableBhopping = true;
 	StrafingMaxAcceleration = 6400;
 	AirStrafeSpeedGainMultiplier = 1.64;
 	AirStrafeRotationRate = 3;
@@ -41,6 +42,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	StrafeSwayRotationRate = 3;
 
 	// Sliding
+	bEnableSliding = true;
 	SlideEnterThreshold = 600;
 	SlideEnterImpulse = 450;
 	SlidingRotationRate = 1;
@@ -50,6 +52,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	SlideJumpSpeed = 100;
 
 	// Wall Jumping
+	bEnableWallJumping = true;
 	WallJumpSpeed = 640;
 	WallJumpBoost = FVector(100, 100, 640);
 	WallJumpBoostDuringWallClimbs = FVector(200, 200, 640);
@@ -58,8 +61,9 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	WallJumpHeightFromGroundThreshold = 64.0;
 
 	// Wall Climbing
+	bEnableWallClimbing = true;
 	WallClimbDuration = 2;
-	WallClimbInterval = 0.64;
+	WallClimbInterval = 0.9;
 	WallClimbSpeed = 340;
 	WallClimbAcceleration = 20;
 	WallClimbMultiplier = FVector(0.64, 0.64, 1);
@@ -67,13 +71,15 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	WallClimbFriction = 2.5;
 	WallClimbAddSpeedThreshold = -10;
 
-	// WallRunning
+	// Wall Running
+	bEnableWallRunning = true;
 	WallRunDuration = 3.4;
 	WallRunSpeed = 740;
 	WallRunAcceleration = 400;
 	WallRunMultiplier = FVector(1, 1, 0);
 	WallRunSpeedThreshold = 600;
 	WallRunAcceptableAngleRadius = 30;
+	WallRunHeightThreshold = 100;
 	
 	// // CharacterMovement (General Settings)
 	MaxAcceleration = 1200; // Derived from the Acceleration values 
@@ -718,7 +724,7 @@ void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, b
 	// Third person (with orient rotation to movement) physics																				//
 	//--------------------------------------------------------------------------------------------------------------------------------------//
 	// Strafing calculations causes problems if the character's movement isn't oriented to their movement
-	if (bOrientRotationToMovement) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
+	if (!bEnableBhopping || bOrientRotationToMovement) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
 	// If the player's rotation is oriented to the camera, it messes up the fp strafing calculations, and this prevents that from happening
 	
 	
@@ -1005,7 +1011,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 		
 		// Wall Run
 		const float Speed = Velocity.Size2D();
-		if (CanWallRun() && Speed > WallRunSpeedThreshold && Angle > 90 - WallRunAcceptableAngleRadius && Angle < 90 + WallRunAcceptableAngleRadius)
+		if (CanWallRun(Hit) && Speed > WallRunSpeedThreshold && Angle > 90 - WallRunAcceptableAngleRadius && Angle < 90 + WallRunAcceptableAngleRadius)
 		{
 			WallRunWall = Hit.GetComponent();
 			WallRunNormal = Hit.Normal;
@@ -1187,6 +1193,9 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 
 bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& OldLocation, const FVector& InputVector, FHitResult& JumpHit, const FHitResult& Hit)
 {
+	// If wall jumping is enabled
+	if (!bEnableWallJumping) return false;
+	
 	// If the player isn't trying to wall jump, just return
 	if (!WallJumpPressed) return false;
 
@@ -1674,11 +1683,16 @@ void UAdvancedMovementComponent::ResetWallClimbInformation(const EMovementMode P
 // WallRun Logic																//
 //------------------------------------------------------------------------------//
 #pragma region Wall Climbing
-bool UAdvancedMovementComponent::CanWallRun() const
+bool UAdvancedMovementComponent::CanWallRun(const FHitResult& Wall) const
 {
 	if (PlayerInput.Y < 0.1 && PlayerInput.Y > -0.1) return false;
-	// It needs to be a different wall
+
 	// If it's the same wall, it needs to be at a lower height
+	if (WallRunWall && WallRunWall == Wall.GetComponent() && WallRunLocation.Z - Wall.Location.Z < WallRunHeightThreshold) return false;
+	
+	// It needs to be a different wall
+	if (WallRunWall && WallRunWall == Wall.GetComponent()) return false;
+	
 	return true;
 }
 
@@ -1697,6 +1711,7 @@ void UAdvancedMovementComponent::ResetWallRunInformation(EMovementMode PrevMode,
 {
 	if (PrevMode == MOVE_Walking)
 	{
+		WallRunWall = nullptr;
 		WallRunStartTime = 0;
 		WallRunLocation = FVector();
 		WallRunNormal = FVector();

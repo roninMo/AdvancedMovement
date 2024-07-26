@@ -55,7 +55,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	bUseWallJumping = true;
 	WallJumpSpeed = 640;
 	WallJumpBoost = FVector(100, 100, 640);
-	WallJumpBoostDuringWallClimbs = FVector(264, 264, 640);
+	WallJumpBoostDuringWallClimbs = FVector(164, 164, 340);
 	WallJumpBoostDuringWallRuns = FVector(340, 340, 540);
 	WallJumpValidDistance = 45;
 	WallJumpHeightFromGroundThreshold = 64.0;

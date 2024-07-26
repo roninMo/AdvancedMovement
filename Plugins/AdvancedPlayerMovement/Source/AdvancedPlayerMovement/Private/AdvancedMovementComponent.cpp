@@ -31,7 +31,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	SlideSpeedLimit = 9000.0;
 
 	// Bunny hopping
-	bEnableBhopping = true;
+	bUseBhopping = true;
 	StrafingMaxAcceleration = 6400;
 	AirStrafeSpeedGainMultiplier = 1.64;
 	AirStrafeRotationRate = 3;
@@ -42,7 +42,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	StrafeSwayRotationRate = 3;
 
 	// Sliding
-	bEnableSliding = true;
+	bUseSliding = true;
 	SlideEnterThreshold = 600;
 	SlideEnterImpulse = 450;
 	SlidingRotationRate = 1;
@@ -52,28 +52,28 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	SlideJumpSpeed = 100;
 
 	// Wall Jumping
-	bEnableWallJumping = true;
+	bUseWallJumping = true;
 	WallJumpSpeed = 640;
 	WallJumpBoost = FVector(100, 100, 640);
-	WallJumpBoostDuringWallClimbs = FVector(200, 200, 640);
-	WallJumpBoostDuringWallRuns = FVector(640, 640, 1000);
+	WallJumpBoostDuringWallClimbs = FVector(264, 264, 640);
+	WallJumpBoostDuringWallRuns = FVector(340, 340, 540);
 	WallJumpValidDistance = 45;
 	WallJumpHeightFromGroundThreshold = 64.0;
 
 	// Wall Climbing
-	bEnableWallClimbing = true;
-	WallClimbDuration = 2;
-	WallClimbInterval = 0.9;
-	WallClimbSpeed = 340;
+	bUseWallClimbing = true;
+	WallClimbDuration = 1.5;
+	WallClimbInterval = 0.74;
+	WallClimbSpeed = 400;
 	WallClimbAcceleration = 20;
 	WallClimbMultiplier = FVector(0.64, 0.64, 1);
-	WallClimbAcceptableAngle = 40;
+	WallClimbAcceptableAngle = 45;
 	WallClimbFriction = 2.5;
 	WallClimbAddSpeedThreshold = -10;
 
 	// Wall Running
-	bEnableWallRunning = true;
-	WallRunDuration = 3.4;
+	bUseWallRunning = true;
+	WallRunDuration = 2;
 	WallRunSpeed = 740;
 	WallRunAcceleration = 400;
 	WallRunMultiplier = FVector(1, 1, 0);
@@ -438,7 +438,7 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 		FHitResult JumpHit;
 		if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, FHitResult()))
 		{
-			CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoostDuringWallClimbs);
+			CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoostDuringWallClimbs, FString("WallClimb"));
 			return;
 		}
 		
@@ -570,7 +570,7 @@ void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iteratio
 		FHitResult JumpHit;
 		if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, FHitResult()))
 		{
-			CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoostDuringWallRuns);
+			CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoostDuringWallRuns, FString("WallRun"));
 			return;
 		}
 
@@ -724,7 +724,7 @@ void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, b
 	// Third person (with orient rotation to movement) physics																				//
 	//--------------------------------------------------------------------------------------------------------------------------------------//
 	// Strafing calculations causes problems if the character's movement isn't oriented to their movement
-	if (!bEnableBhopping || bOrientRotationToMovement) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
+	if (!bUseBhopping || bOrientRotationToMovement) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
 	// If the player's rotation is oriented to the camera, it messes up the fp strafing calculations, and this prevents that from happening
 	
 	
@@ -974,7 +974,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 	FHitResult JumpHit;
 	if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, Hit))
 	{
-		CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoost);
+		CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoost, FString("Air Strafe"));
 		return;
 	}
 	
@@ -1194,7 +1194,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& OldLocation, const FVector& InputVector, FHitResult& JumpHit, const FHitResult& Hit)
 {
 	// If wall jumping is enabled
-	if (!bEnableWallJumping) return false;
+	if (!bUseWallJumping) return false;
 	
 	// If the player isn't trying to wall jump, just return
 	if (!WallJumpPressed) return false;
@@ -1277,54 +1277,74 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 }
 
 
-void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector Boost)
+void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector Boost, FString PrevState)
 {
-	// The velocity calculation happens when the character is already sliding alongside the wall, and we need a calculation that's net safe for handling every scenario safely
-	const FVector WallLocation = FVector(Wall.ImpactPoint.X, Wall.ImpactPoint.Y, 0);
-	const FVector PrevLocation = FVector(PreviousGroundLocation.X, PreviousGroundLocation.Y, 0);
-	if (PrevLocation.Equals(WallLocation, 25)) PreviousGroundLocation += Wall.Normal * 25;
-	
-	// Calculate the trajectory
-	const FVector CharacterTrajectory = (WallLocation - PrevLocation).GetSafeNormal2D();
-	const float WallAngle = Wall.ImpactNormal.Dot(CharacterTrajectory); // -0.5 or greater is 45^ or less
-	FVector WallJump = (CharacterTrajectory - 2 * (CharacterTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
-	
-	// Check if the previous ground location is behind the wall location using the normal, if so fix the trajectory so it doesn't create the wrong walljumps
-	if (WallAngle > 0)
+	// Most velocity calculation happens when the character is already sliding alongside the wall, and we need a calculation that's net safe for handling every scenario safely
+	FVector WallJump;
+	if (IsCustomMovementMode(MOVE_Custom_WallClimbing))
 	{
-		const FVector LocationAlignedToWall = (Wall.Normal.GetSafeNormal2D() * WallLocation) + ((FVector(1) - Wall.Normal.GetSafeNormal2D()) * PrevLocation);
-		const float DistanceFromWall = LocationAlignedToWall.Size();
-		const FVector WallJumpTrajectory = (WallLocation - (LocationAlignedToWall + (Wall.ImpactNormal * DistanceFromWall))).GetSafeNormal();
-		WallJump = (WallJumpTrajectory - 2 * (WallJumpTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
-
-		if (bDebugWallJumpTrajectory)
+		WallJump = Wall.Normal;
+		WallJump.Z = 1;
+	}
+	else if (IsCustomMovementMode(MOVE_Custom_WallRunning))
+	{
+		const float PlayerForwardsDirection = UpdatedComponent->GetForwardVector().Dot(WallRunWall->GetRightVector());
+		const FVector WallJumpDirection = PlayerForwardsDirection < 0 ? WallRunWall->GetRightVector() * -1 : WallRunWall->GetRightVector();
+		WallJump = FVector(
+			FMath::Clamp((WallJumpDirection.X + WallRunNormal.X) / 2, -1, 1),
+			FMath::Clamp((WallJumpDirection.Y + WallRunNormal.Y) / 2, -1, 1),
+			1
+		);
+	}
+	else
+	{
+		// Calculate the trajectory
+		const FVector WallLocation = FVector(Wall.ImpactPoint.X, Wall.ImpactPoint.Y, 0);
+		const FVector PrevLocation = FVector(PreviousGroundLocation.X, PreviousGroundLocation.Y, 0);
+		if (PrevLocation.Equals(WallLocation, 25)) PreviousGroundLocation += Wall.Normal * 25;
+		const FVector CharacterTrajectory = (WallLocation - PrevLocation).GetSafeNormal2D();
+		
+		const float WallAngle = Wall.ImpactNormal.Dot(CharacterTrajectory); // -0.5 or greater is 45^ or less
+		WallJump = (CharacterTrajectory - 2 * (CharacterTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
+		
+		// Check if the previous ground location is behind the wall location using the normal, if so fix the trajectory so it doesn't create the wrong walljumps
+		if (WallAngle > 0)
 		{
-			DrawDebugBox(GetWorld(), LocationAlignedToWall, FVector(10), FColor::Red, false, 5);
-			DrawDebugBox(GetWorld(), LocationAlignedToWall + Wall.ImpactNormal * DistanceFromWall, FVector(10), FColor::Orange, false, 5);
+			const FVector LocationAlignedToWall = (Wall.Normal.GetSafeNormal2D() * WallLocation) + ((FVector(1) - Wall.Normal.GetSafeNormal2D()) * PrevLocation);
+			const float DistanceFromWall = LocationAlignedToWall.Size();
+			const FVector WallJumpTrajectory = (WallLocation - (LocationAlignedToWall + (Wall.ImpactNormal * DistanceFromWall))).GetSafeNormal();
+			WallJump = (WallJumpTrajectory - 2 * (WallJumpTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
+
+			if (bDebugWallJumpTrajectory)
+			{
+				DrawDebugBox(GetWorld(), LocationAlignedToWall, FVector(10), FColor::Red, false, 5);
+				DrawDebugBox(GetWorld(), LocationAlignedToWall + Wall.ImpactNormal * DistanceFromWall, FVector(10), FColor::Orange, false, 5);
+			}
+		}
+		// Fix wall jumps when sliding alongside a wall (during Air Strafing)
+		else if (WallAngle > -0.45)
+		{
+			WallJump = (Velocity.GetSafeNormal2D() - Wall.ImpactNormal) / 2 + Wall.ImpactNormal;
+			if (bDebugWallJumpTrajectory) UE_LOGFMT(LogTemp, Log, "AlongsideWallJump: {0}, Velocity: {1}, ImpactNormal: {2}, WallAngle: {3}", *WallJump.ToString(), *Velocity.GetSafeNormal2D().ToString(), *Wall.ImpactNormal.ToString(), WallAngle);
+		}
+
+		// Wall jump Z velocity is factored in during the boost, and not while redirecting the velocity
+		WallJump = FVector(WallJump.X, WallJump.Y, 1);
+		
+		// Smooth out gravity for non positive wall jump values
+		if (Velocity.GetSafeNormal().Z < 0)
+		{
+			WallJump = FVector(WallJump.X, WallJump.Y, 0.5);
 		}
 	}
-	// Fix wall jumps when sliding alongside a wall
-	else if (WallAngle > -0.45)
-	{
-		WallJump = (Velocity.GetSafeNormal2D() - Wall.ImpactNormal) / 2 + Wall.ImpactNormal;
-		if (bDebugWallJumpTrajectory) UE_LOGFMT(LogTemp, Log, "AlongsideWallJump: {0}, Velocity: {1}, ImpactNormal: {2}, WallAngle: {3}", *WallJump.ToString(), *Velocity.GetSafeNormal2D().ToString(), *Wall.ImpactNormal.ToString(), WallAngle);
-	}
-
-	// Wall jump Z velocity
-	WallJump = FVector(WallJump.X, WallJump.Y, 0.54);
 	
-	// Smooth out gravity for non positive wall jump values
-	if (Velocity.GetSafeNormal().Z < 0)
-	{
-		WallJump = FVector(WallJump.X, WallJump.Y, 0.25);
-	}
-
 	
 	// Wall jump calculations. Their speeds should be static, and also save the player's current velocity
-	const float CurrentSpeed = FVector(Velocity.X, Velocity.Y, 0).Size();
+	const float CurrentSpeed = Velocity.Size2D();
 	const FVector RedirectedVelocity = FVector(WallJump.X, WallJump.Y, 0) * FMath::Max(CurrentSpeed, Speed);
 	Velocity = RedirectedVelocity + (WallJump * Boost);
 	PrevWallJumpNormal = Wall.ImpactNormal;
+
 	
 	SetMovementMode(MOVE_Falling);
 	StartNewPhysics(TimeTick, Iterations);
@@ -1334,7 +1354,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 	{
 		UE_LOGFMT(LogTemp, Log, "{0}::WallJump ({1}) ->  ({2})({3}) RedirectedVel: ({4}), Vel: ({5}), Boost: ({6}), CapturedSpeed: ({7})",
 			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
-			*FString::SanitizeFloat(Time),
+			*PrevState,
 			*GetMovementDirection(PlayerInput),
 			*FString::SanitizeFloat(Speed),
 			*RedirectedVelocity.ToString(),
@@ -1670,6 +1690,7 @@ void UAdvancedMovementComponent::ResetWallClimbInformation(const EMovementMode P
 {
 	if (PrevMode == MOVE_Walking)
 	{
+		WallClimbStartTime = 0;
 		PrevWallClimbTime = 0;
 		PrevWallClimbLocation = FVector();
 	}

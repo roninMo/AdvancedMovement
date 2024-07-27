@@ -3,6 +3,7 @@
 
 #include "AdvancedMovementComponent.h"
 #include "UnrealUSDWrapper.h"
+#include "Character/BhopCharacter.h"
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
 #include "Kismet/KismetMathLibrary.h"
@@ -57,6 +58,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	WallJumpBoost = FVector(100, 100, 640);
 	WallJumpBoostDuringWallClimbs = FVector(164, 164, 340);
 	WallJumpBoostDuringWallRuns = FVector(340, 340, 540);
+	WallJumpLimit = 2;
 	WallJumpValidDistance = 45;
 	WallJumpHeightFromGroundThreshold = 64.0;
 
@@ -71,6 +73,18 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	WallClimbFriction = 2.5;
 	WallClimbAddSpeedThreshold = -10;
 
+	// Mantling
+	bUseMantling = true;
+	MantleLedgeLocationOffset = -20;
+	MantleSpeed = 100;
+	MantleRotationSpeed = 100;
+	MantleTraceHeightOffset = 10;
+	MantleTraceDistance = 45;
+	MantleSecondTraceDistance = 90;
+	
+	// Ledge Climbing
+	bUseLedgeClimbing = true;
+	
 	// Wall Running
 	bUseWallRunning = true;
 	WallRunDuration = 2;
@@ -85,6 +99,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	MaxAcceleration = 1200; // Derived from the Acceleration values 
 	BrakingFrictionFactor = 2;
 	BrakingFriction = 2.5;
+	CrouchedHalfHeight = 64;
 	bUseSeparateBrakingFriction = true;
 	Mass = 100;
 	DefaultLandMovementMode = EMovementMode::MOVE_Walking;
@@ -208,6 +223,7 @@ bool UAdvancedMovementComponent::IsRunning() const { return MovementMode == MOVE
 bool UAdvancedMovementComponent::IsWallClimbing() const { return MovementMode == MOVE_Custom && CustomMovementMode == MOVE_Custom_WallClimbing; }
 bool UAdvancedMovementComponent::IsWallRunning() const { return MovementMode == MOVE_Custom && CustomMovementMode == MOVE_Custom_WallRunning; }
 bool UAdvancedMovementComponent::IsMantling() const { return MovementMode == MOVE_Custom_Mantling; }
+bool UAdvancedMovementComponent::IsLedgeClimbing() const { return MovementMode == MOVE_Custom && CustomMovementMode == MOVE_Custom_LedgeClimbing; }
 bool UAdvancedMovementComponent::IsAiming() const { return AimPressed; }
 bool UAdvancedMovementComponent::IsStrafeSwaying() { return AirStrafeSwayPhysics; }
 #pragma endregion 
@@ -269,11 +285,15 @@ void UAdvancedMovementComponent::OnMovementModeChanged(EMovementMode PreviousMov
 	// Handle exiting previous modes
 	if		(PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_Slide) ExitSlide();
 	else if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_WallClimbing) ExitWallClimb();
+	else if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_Mantling) ExitMantle();
+	else if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_LedgeClimbing) ExitLedgeClimb();
 	else if (PreviousMovementMode == MOVE_Custom && PreviousCustomMode == MOVE_Custom_WallRunning) ExitWallRun();
 
 	// Handle entering new modes
 	if		(IsCustomMovementMode(MOVE_Custom_Slide)) EnterSlide(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
 	else if (IsCustomMovementMode(MOVE_Custom_WallClimbing)) EnterWallClimb(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
+	else if (IsCustomMovementMode(MOVE_Custom_Mantling)) EnterMantle(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
+	else if (IsCustomMovementMode(MOVE_Custom_LedgeClimbing)) EnterLedgeClimb(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
 	else if (IsCustomMovementMode(MOVE_Custom_WallRunning)) EnterWallRun(PreviousMovementMode, static_cast<ECustomMovementMode>(PreviousCustomMode));
 
 	// State information
@@ -409,6 +429,13 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 		return;
 	}
 	
+	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	{
+		Acceleration = FVector::ZeroVector;
+		Velocity = FVector::ZeroVector;
+		return;
+	}
+
 	if (WallClimbStartTime + WallClimbDuration < Time)
 	{
 		SetMovementMode(MOVE_Falling);
@@ -485,9 +512,11 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 			}
 			
 			// if they're trying to transition to mantling
-			if (Mantling)
+			if (PlayerInput.X > 0.1 && CheckIfSafeToMantleLedge())
 			{
-				
+				SetMovementMode(MOVE_Custom, MOVE_Custom_Mantling);
+				StartNewPhysics(deltaTime, Iterations);
+				return;
 			}
 			
 			// transition out of wall climbing if they aren't trying to climb the wall
@@ -531,6 +560,84 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 
 void UAdvancedMovementComponent::PhysMantling(float deltaTime, int32 Iterations)
 {
+	if (deltaTime < MIN_TICK_TIME)
+	{
+		return;
+	}
+
+	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	{
+		Acceleration = FVector::ZeroVector;
+		Velocity = FVector::ZeroVector;
+		return;
+	}
+
+	if (PlayerInput.X < -0.1)
+	{
+		SetMovementMode(MOVE_Falling);
+		StartNewPhysics(deltaTime, Iterations);
+		return;
+	}
+	
+	// CheckIfSafeToMantleLedge()
+	
+	// Setup physics sub steps
+	float remainingTime = deltaTime;
+	while( (remainingTime >= MIN_TICK_TIME) && (Iterations < MaxSimulationIterations) )
+	{
+		Iterations++;
+		float CurrentTime = Time - MantleStartTime;
+		float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
+		remainingTime -= timeTick;
+
+		// save the current values
+		const FRotator OldRotation = UpdatedComponent->GetComponentRotation();
+		const FVector OldLocation = UpdatedComponent->GetComponentLocation();
+		FVector Adjusted;
+		RestorePreAdditiveRootMotionVelocity();
+		
+		// Move the character to the target location
+		FVector Dist = MantleLedgeLocation - OldLocation;
+		float DeltaM = Dist.Size();
+		float CurrentSpeed = MantleSpeedAdjustments ? FMath::Clamp(MantleSpeedAdjustments->GetFloatValue(CurrentTime), 0, 1) : 1;
+		float Speed = DeltaM * CurrentSpeed * MantleSpeed;
+
+		// Calculations
+		FVector DeltaN = (Dist / DeltaM) * deltaTime;
+		Adjusted = Dist.GetSafeNormal() * Speed;
+		// Velocity = Adjusted;
+
+		// Rotations
+		float RotationSpeedAdjustments = MantleRotationSpeedAdjustments ? FMath::Clamp(MantleRotationSpeedAdjustments->GetFloatValue(CurrentTime), 0, 1) : 1;
+		FRotator Rotation = UKismetMathLibrary::RInterpTo(
+			OldRotation,
+			MantleRotation,
+			deltaTime,
+			MantleRotationSpeed * RotationSpeedAdjustments
+		);
+		
+		FHitResult Hit;
+		SafeMoveUpdatedComponent(Adjusted, Rotation, false, Hit);
+		if (UpdatedComponent->GetComponentLocation().Equals(MantleLedgeLocation, 0.1))
+		{
+			SetMovementMode(MOVE_Walking);
+			return;
+		}
+		
+		UE_LOGFMT(LogTemp, Log, "DeltaN: ({0}), CurrentSpeed: ({1}), CurveValue: ({2}), Multiplier: ({3}), Speed: ({4}), Adjusted: ({5})",
+			*DeltaN.ToString(),
+			CurrentSpeed,
+			MantleSpeedAdjustments ? MantleSpeedAdjustments->GetFloatValue(CurrentTime) : 1,
+			MantleSpeed,
+			Speed,
+			*Adjusted.ToString()
+		);
+	}
+}
+
+
+void UAdvancedMovementComponent::PhysLedgeClimbing(float deltaTime, int32 Iterations)
+{
 }
 
 
@@ -541,6 +648,13 @@ void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iteratio
 		return;
 	}
 	
+	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	{
+		Acceleration = FVector::ZeroVector;
+		Velocity = FVector::ZeroVector;
+		return;
+	}
+
 	if (WallRunStartTime + WallRunDuration < Time)
 	{
 		SetMovementMode(MOVE_Falling);
@@ -1199,12 +1313,15 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 	// If the player isn't trying to wall jump, just return
 	if (!WallJumpPressed) return false;
 
+	// Don't allow any of those extra wall jumps
+	if (CurrentWallJumpCount >= WallJumpLimit) return false;
+
 	// Prevent wall jumping immediately and wasting another jump (We use distance instead of height to account for ledges and all scenarios)
 	if ((UpdatedComponent->GetComponentLocation() - PreviousGroundLocation).Size() < WallJumpHeightFromGroundThreshold ) return false;
 	
 	// If the movement component has captured a valid wall already, just use that
-	if (Hit.bBlockingHit && !Hit.ImpactNormal.Equals(PrevWallJumpNormal, 0.1)
-	) {
+	if (Hit.bBlockingHit && !Hit.ImpactNormal.Equals(PrevWallJumpNormal, 0.1))
+	{
 		JumpHit = Hit;
 		return true;
 	}
@@ -1280,6 +1397,7 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector Boost, FString PrevState)
 {
 	// Most velocity calculation happens when the character is already sliding alongside the wall, and we need a calculation that's net safe for handling every scenario safely
+	CurrentWallJumpCount++;
 	FVector WallJump;
 	if (IsCustomMovementMode(MOVE_Custom_WallClimbing))
 	{
@@ -1371,6 +1489,11 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 
 void UAdvancedMovementComponent::ResetWallJumpInformation(const EMovementMode PrevMode, uint8 PrevCustomMode)
 {
+	if (IsMovingOnGround())
+	{
+		CurrentWallJumpCount = 0;
+	}
+
 	if (PrevMode == MOVE_Falling)
 	{
 		PrevWallJumpNormal = FVector::ZeroVector;
@@ -1662,7 +1785,7 @@ void UAdvancedMovementComponent::ExitSlide()
 
 
 //------------------------------------------------------------------------------//
-// WallRun Logic																//
+// WallClimb Logic																//
 //------------------------------------------------------------------------------//
 #pragma region Wall Running
 bool UAdvancedMovementComponent::CanWallClimb() const
@@ -1699,11 +1822,172 @@ void UAdvancedMovementComponent::ResetWallClimbInformation(const EMovementMode P
 
 
 
+//------------------------------------------------------------------------------//
+// Mantle and Ledge Climb Logic													//
+//------------------------------------------------------------------------------//
+#pragma region Mantling
+bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
+{
+	if (!UpdatedComponent || !GetWorld() || !CharacterOwner || !CharacterOwner->GetCapsuleComponent()) return false;
+
+	float CharacterRadius = CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleRadius();
+	float CharacterHalfHeight = CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	float CharacterHalfHeightNoHemisphere = CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleHalfHeight_WithoutHemisphere();
+	float CharacterHemisphereHeight = CharacterHalfHeight - CharacterHalfHeightNoHemisphere;
+	
+	TArray<AActor*> CharacterActors;
+	CharacterOwner->GetAllChildActors(CharacterActors); // TODO: Investigate if this includes player spawned actors
+	CharacterActors.AddUnique(CharacterOwner);
+	
+	// Search for a wall
+	const FVector InitialTraceStart = UpdatedComponent->GetComponentLocation() - FVector(0, 0, MantleTraceHeightOffset);
+	const FVector InitialTraceEnd = InitialTraceStart + UpdatedComponent->GetForwardVector() * MantleTraceDistance;
+	FHitResult Wall;
+	UKismetSystemLibrary::LineTraceSingleForObjects(
+		GetWorld(),
+		InitialTraceStart,
+		InitialTraceEnd,
+		MantleObjects,
+		false,
+		CharacterActors,
+		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		Wall,
+		true,
+		FColor::Emerald,
+		FColor::Red,
+		5
+	);
+
+	if (!Wall.IsValidBlockingHit())
+	{
+		return false;
+	}
+
+	// Search for a valid ledge
+	const FVector LedgeSurfaceEnd = Wall.Location + UpdatedComponent->GetForwardVector() * CharacterRadius;
+	const FVector LedgeSurfaceStart = LedgeSurfaceEnd + MantleSecondTraceDistance;
+	FHitResult Ledge;
+	UKismetSystemLibrary::LineTraceSingleForObjects(
+		GetWorld(),
+		LedgeSurfaceStart,
+		LedgeSurfaceEnd,
+		MantleObjects,
+		false,
+		CharacterActors,
+		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		Ledge,
+		true,
+		FColor::Emerald,
+		FColor::Red,
+		5
+	);
+
+	if (!Ledge.IsValidBlockingHit())
+	{
+		return false;
+	}
+	
+	// Check if the player is able to climb to it, and if they have to crouch
+	FVector FrontOfLedgeMidpoint = Ledge.Location - (UpdatedComponent->GetForwardVector() * (CharacterRadius + 6.4)) + FVector(0, 0, MantleTraceHeightOffset + CharacterHemisphereHeight);
+	FVector ClimbStart = FrontOfLedgeMidpoint + (FVector(0, 0, CharacterHalfHeightNoHemisphere * 2)) - FVector(0, 0, MantleTraceHeightOffset);
+	FVector ClimbEnd = FVector(ClimbStart.X, ClimbStart.Y, UpdatedComponent->GetComponentLocation().Z - CharacterHalfHeightNoHemisphere + MantleTraceHeightOffset);
+	FHitResult ClimbSpace;
+	UKismetSystemLibrary::SphereTraceSingleForObjects(
+		GetWorld(),
+		ClimbStart,
+		ClimbEnd,
+		CharacterRadius,
+		MantleObjects,
+		false,
+		CharacterActors,
+		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		ClimbSpace,
+		true,
+		FColor::Emerald,
+		FColor::Red,
+		5
+	);
+
+	if (ClimbSpace.IsValidBlockingHit())
+	{
+		return false;
+	}
+	
+	// Check if they're able to walk on the ledge
+	FVector LedgeWalkStart = Ledge.Location + FVector(0, 0, MantleTraceHeightOffset + CharacterHemisphereHeight);
+	FVector LedgeWalkEnd = LedgeWalkStart + FVector(0, 0, CharacterHalfHeightNoHemisphere * 2) - FVector(0, 0, MantleTraceHeightOffset);
+	FHitResult LedgeRoom;
+	UKismetSystemLibrary::SphereTraceSingleForObjects(
+		GetWorld(),
+		LedgeWalkStart,
+		LedgeWalkEnd,
+		CharacterRadius,
+		MantleObjects,
+		false,
+		CharacterActors,
+		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		LedgeRoom,
+		true,
+		FColor::Emerald,
+		FColor::Red,
+		5
+	);
+
+	if (LedgeRoom.IsValidBlockingHit())
+	{
+		return false;
+	}
+
+	// Determine the mantle type
+	LedgeClimbLocation = Ledge.Location;
+	MantleLedgeLocation = Ledge.Location - (UpdatedComponent->GetForwardVector() * CharacterRadius * 2) + MantleLedgeLocationOffset;
+	MantleRotation = (Ledge.Normal * -1).Rotation();
+	
+	// If in walking or in air, just use a normal ledge climb
+	// If falling quickly through the air, use a slow ledge climb type
+	// If walking and it's an object close to the ground, use a quick ledge climb type
+	ClimbType = EClimbType::Normal;
+	
+	return true;
+}
+
+
+void UAdvancedMovementComponent::EnterMantle(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode)
+{
+	MantleStartTime = Time;
+}
+
+
+void UAdvancedMovementComponent::ExitMantle()
+{
+	MantleStartTime = 0;
+	MantleStartLocation = FVector();
+	MantleLedgeLocation = FVector();
+	MantleRotation = FRotator();
+}
+
+
+void UAdvancedMovementComponent::EnterLedgeClimb(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode)
+{
+	LedgeClimbStartTime = Time;
+}
+
+
+void UAdvancedMovementComponent::ExitLedgeClimb()
+{
+	LedgeClimbStartTime = 0;
+	LedgeClimbStartLocation = FVector();
+	LedgeClimbLocation = FVector();
+}
+#pragma endregion 
+
+
+
 
 //------------------------------------------------------------------------------//
 // WallRun Logic																//
 //------------------------------------------------------------------------------//
-#pragma region Wall Climbing
+#pragma region Wall Running
 bool UAdvancedMovementComponent::CanWallRun(const FHitResult& Wall) const
 {
 	if (PlayerInput.Y < 0.1 && PlayerInput.Y > -0.1) return false;
@@ -1746,7 +2030,7 @@ void UAdvancedMovementComponent::ResetWallRunInformation(EMovementMode PrevMode,
 //------------------------------------------------------------------------------//
 // Multiplayer input replication logic											//
 //------------------------------------------------------------------------------//
-#pragma region Multiplay input replication
+#pragma region Multiplayer Input Replication
 void UAdvancedMovementComponent::MoveAutonomous(float ClientTimeStamp, float DeltaTime, uint8 CompressedFlags, const FVector& NewAccel)
 {
 	// Save additional movement information 
@@ -2286,6 +2570,19 @@ FVector UAdvancedMovementComponent::GetPlayerInput() const
 {
 	return PlayerInput;
 }
+
+
+EMovementMode UAdvancedMovementComponent::GetMovementMode() const
+{
+	return MovementMode;
+}
+
+
+ECustomMovementMode UAdvancedMovementComponent::GetCustomMovementMode() const
+{
+	return static_cast<ECustomMovementMode>(CustomMovementMode);
+}
+
 
 FVector UAdvancedMovementComponent::ComputeSlideVector(const FVector& Delta, const float HitTime, const FVector& Normal, const FHitResult& Hit) const
 {

@@ -13,6 +13,7 @@ enum ECustomMovementMode
 	MOVE_Custom_Slide				UMETA(DisplayName = "Slide"),
 	MOVE_Custom_WallClimbing		UMETA(DisplayName = "Wall Climbing"),
 	MOVE_Custom_Mantling			UMETA(DisplayName = "Mantling"),
+	MOVE_Custom_LedgeClimbing		UMETA(DisplayName = "Ledge Climbing"),
 	MOVE_Custom_WallRunning			UMETA(DisplayName = "Wall Running"),
 	MOVE_Custom_MAX					UMETA(Hidden)
 };
@@ -41,56 +42,39 @@ enum class EMovementDirection : uint8
 };
 
 
-/** If the character is turning while not moving */
+/** The type of ledge climb the player is performing */
 UENUM(BlueprintType)
-enum class EVaultType : uint8
+enum class EClimbType : uint8
 {
-	Vault_High							UMETA(DisplayName = "High"),
-	Vault_Low							UMETA(DisplayName = "Low"),
-	Vault_VaultOver						UMETA(DisplayName = "Vault Over"),
-	Vault_FallingCatch					UMETA(DisplayName = "Falling Catch"),
-	Vault_None                          UMETA(DisplayName = "None")
+	Normal							UMETA(DisplayName = "Normal"),
+	Fast							UMETA(DisplayName = "Fast"),
+	Slow							UMETA(DisplayName = "Slow"),
+	None							UMETA(DisplayName = "None")
 };
 
 
-/** The information to smoothly perform a vault -  TODO: Refactor this */
+/** The information to smoothly perform a ledge climb. You'll probably want to refactor this to adjust things for how you handle different logic */
 USTRUCT(BlueprintType)
-struct F_VaultInformation
+struct FLedgeClimbInformation
 {
 	GENERATED_USTRUCT_BODY()
-		F_VaultInformation(
-			UAnimMontage* Montage = nullptr,
-			const float Duration = 0,
-			UCurveFloat* Curve = nullptr,
+		FLedgeClimbInformation(
+			const EClimbType LedgeClimbType = EClimbType::None,
+			UCurveFloat* SpeedAdjustments = nullptr,
 			const float InterpSpeed = 0
-
-			/*
-				const float LowHeight = 0.0f,
-				const float LowPlayRate = 0.0f,
-				const float LowStartPosition = 0.0f,
-				
-				const float HighHeight = 0.0f,
-				const float HighPlayRate = 0.0f,
-				const float HighStartPosition = 0.0f
-			*/
 		) :
 
-		Montage(Montage),
-		Duration(Duration),
-		Curve(Curve),
+		SpeedAdjustments(SpeedAdjustments),
 		InterpSpeed(InterpSpeed)
-
 	{}
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadWrite) UAnimMontage* Montage;
+	/** The ledge climb variation that this information stores */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite) EClimbType LedgeClimbType;
+	
+	/** The ledge climb curve for handling interping smoothly while handling any montage without lots of complications (this is kind of hacky, but it's better than the majority of other fixes for this) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite) UCurveFloat* SpeedAdjustments;
 
-	/** The duration of the montage section (including accounting for montage blending) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite) float Duration;
-
-	/** The mantle curve for handling interping smoothly while handling any montage without lots of complications (this is kind of hacky, but it's better than the majority of other fixes for this) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite) UCurveFloat* Curve;
-
-	/** The interp speed is used as a multiplier after everything else is set, and it's used to prioritize the overall speed of the mantle */
+	/** The interp speed is used as a multiplier after everything else is set, and it's used to prioritize the overall speed of the ledge climb */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite) float InterpSpeed;
 };

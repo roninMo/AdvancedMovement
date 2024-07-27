@@ -217,6 +217,11 @@ public:
 
 
 
+
+
+
+
+
 */
 	
 	
@@ -290,6 +295,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(EditCondition = "bUseWallJumping", EditConditionHides))
 	FVector WallJumpBoostDuringWallRuns;
 	
+	/** How many times is a player allowed to wall jump while in air? If set to 0, there is no limit */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(UIMin = "0", UIMax = "10", EditCondition = "bUseWallJumping", EditConditionHides))
+	int32 WallJumpLimit;
+
 	/** How far away is a wall allowed to for the player to be able to wall jump against */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(UIMin = "0", UIMax = "343", EditCondition = "bUseWallJumping", EditConditionHides))
 	float WallJumpValidDistance;
@@ -314,6 +323,9 @@ protected:
 	/** The location of the player the last time they were on the ground */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump") FVector PreviousGroundLocation;
 
+	/** The current amount of wall jumps the player has done while in air */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump") int32 CurrentWallJumpCount;
+	
 
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Wall Climbing																													//
@@ -333,7 +345,7 @@ protected:
 	
 	/** The speed the player climbs the wall */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseWallClimbing", EditConditionHides))
-	float WallClimbSpeed;
+	float WallClimbSpeed; 
 
 	/** The player's climb speed acceleration */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseWallClimbing", EditConditionHides))
@@ -369,6 +381,105 @@ protected:
 	
 	/** The previous time the player had completed a wall climb */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing") float PrevWallClimbTime;
+
+	
+//----------------------------------------------------------------------------------------------------------------------------------//
+// Mantling																															//
+//----------------------------------------------------------------------------------------------------------------------------------//
+protected:
+	/** Uses mantling */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)") 
+	bool bUseMantling;
+
+	/** The offset for when the player is mantling on a ledge */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleLedgeLocationOffset;
+
+	/** The speed at which the player transitions to the mantle location */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleSpeed;
+
+	/** The curve that adjusts the speed to allow for smooth interpolations and adjustments */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(EditCondition = "bUseMantling", EditConditionHides)) 
+	UCurveFloat* MantleSpeedAdjustments;
+
+	/** The speed at which the player rotates to the mantle location */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleRotationSpeed;
+
+	/** The curve that adjusts the rotation speed to allow for smooth interpolations and adjustments */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(EditCondition = "bUseMantling", EditConditionHides)) 
+	UCurveFloat* MantleRotationSpeedAdjustments;
+	
+	/** The height offset for traces when checking for a wall */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleTraceHeightOffset;
+	
+	/** The distance of the trace, used for determining whether you're able to vault over something */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "25", UIMax = "200", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleTraceDistance;
+
+	/** The distance of the trace that goes up and checks for the surface */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "20", UIMax = "200", EditCondition = "bUseMantling", EditConditionHides))
+	float MantleSecondTraceDistance;
+
+	/** The types of objects the player is allowed to mantle on */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(EditCondition = "bUseMantling", EditConditionHides)) 
+	TArray<TEnumAsByte<EObjectTypeQuery>> MantleObjects;
+	
+	/** Mantle trace information */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling|Debug", meta=(EditCondition = "bUseMantling", EditConditionHides))
+	bool bDebugMantleAndClimbTrace;
+	
+	/** Mantle information */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling|Debug", meta=(EditCondition = "bUseMantling", EditConditionHides))
+	bool bDebugMantle;
+
+	
+protected:
+	/** The time the player starts mantling */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling") float MantleStartTime;
+
+	/** The mantle ledge location */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling") FVector MantleStartLocation;
+
+	/** The mantle ledge location */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling") FVector MantleLedgeLocation;
+
+	/** The mantle rotation */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling") FRotator MantleRotation;
+	
+
+//----------------------------------------------------------------------------------------------------------------------------------//
+// Ledge Climbing																													//
+//----------------------------------------------------------------------------------------------------------------------------------//
+protected:
+	/** Uses Ledge Climbing */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)") 
+	bool bUseLedgeClimbing;
+
+	/** The information for handling different ledge climb variation's speeds with movement smoothing */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing", meta=(EditCondition = "bUseLedgeClimbing", EditConditionHides)) 
+	TMap<EClimbType, FLedgeClimbInformation> LedgeClimbVariations;
+
+	/** Mantle information */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing|Debug", meta=(EditCondition = "bUseLedgeClimbing", EditConditionHides))
+	bool bDebugLedgeClimb;
+
+
+protected:
+	/** The time the player starts ledge climbing */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") float LedgeClimbStartTime;
+
+	/** The location of the player at the beginning of the ledge climb */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") FVector LedgeClimbStartLocation;
+	
+	/** The ledge climb location */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") FVector LedgeClimbLocation;
+	
+	/** The variation of ledge climb the player is performing */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") EClimbType ClimbType;
+
 	
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
@@ -482,16 +593,12 @@ protected:
 protected:
 	/** land movement and information */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugGroundMovement;
-
-	/** Debug movement mode */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugMovementMode;
 	
 	/** Debug network replication */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugNetworkReplication;
-	
-	/** Debug mantling */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugVault;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging|Mantling") float MantleTraceDuration = 5;
+
+	/** Debug movement mode */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugMovementMode;
 
 	/** The physics channel for tracing against objects in the world */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)") TEnumAsByte<ETraceTypeQuery> MovementChannel;
@@ -535,6 +642,9 @@ public:
 	
 	/** If the player is mantling */
 	UFUNCTION(BlueprintCallable) virtual bool IsMantling() const;
+
+	/** If the player is climbing */
+	UFUNCTION(BlueprintCallable) virtual bool IsLedgeClimbing() const;
 
 	/** If the player is aiming */
 	UFUNCTION(BlueprintCallable) virtual bool IsAiming() const;
@@ -587,6 +697,9 @@ protected:
 
 	/** @note Movement update functions should only be called through StartNewPhysics()*/
 	virtual void PhysMantling(float deltaTime, int32 Iterations);
+	
+	/** @note Movement update functions should only be called through StartNewPhysics()*/
+	virtual void PhysLedgeClimbing(float deltaTime, int32 Iterations);
 	
 	/** @note Movement update functions should only be called through StartNewPhysics()*/
 	virtual void PhysWallRunning(float deltaTime, int32 Iterations);
@@ -698,10 +811,42 @@ protected:
 
 	/** Reset wall climb information based on specific states and movement modes */
 	virtual void ResetWallClimbInformation(EMovementMode PrevMode, uint8 PrevCustomMode);
+
+	
+//------------------------------------------------------------------------------//
+// Mantle Logic																	//
+//------------------------------------------------------------------------------//
+public:
+	/**
+	 * Checks if there's a ledge to climb up on, and if it's safe to mantle. If so, captures the information before transitioning to mantling
+	 * 
+	 * This handles both walking and in air logic, just don't transition to mantling if the player is already walking
+	 * @returns true if it found a valid ledge to mantle/climb
+	 */
+	UFUNCTION(BlueprintCallable) virtual bool CheckIfSafeToMantleLedge();
+
+	
+protected:
+	/** Enter wall mantle logic */
+	virtual void EnterMantle(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode);
+
+	/** Exit wall mantle logic */
+	virtual void ExitMantle();
+	
+
+//------------------------------------------------------------------------------//
+// Ledge Climb Logic															//
+//------------------------------------------------------------------------------//
+protected:
+	/** Enter wall ledge climb logic */
+	virtual void EnterLedgeClimb(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode);
+
+	/** Exit wall ledge climb logic */
+	virtual void ExitLedgeClimb();
 	
 	
 //------------------------------------------------------------------------------//
-// WallClimb Logic																//
+// WallRun Logic																//
 //------------------------------------------------------------------------------//
 public:
 	/** Returns true if current movement state and wall is valid for running, and if the player trying to wall run */
@@ -902,6 +1047,7 @@ public:
 //------------------------------------------------------------------------------//
 // Get And Set functions														//
 //------------------------------------------------------------------------------//
+public:
 	/** Returns maximum acceleration for the current state. */
 	virtual float GetMaxAcceleration() const override;
 	
@@ -913,6 +1059,12 @@ public:
 	
 	/** Returns the player's current input */
 	UFUNCTION(BlueprintCallable) virtual FVector GetPlayerInput() const;
+
+	/** Returns the movement mode */
+	UFUNCTION(BlueprintCallable) virtual EMovementMode GetMovementMode() const;
+
+	/** Returns the custom movement mode */
+	UFUNCTION(BlueprintCallable) virtual ECustomMovementMode GetCustomMovementMode() const;
 
 	
 //------------------------------------------------------------------------------//

@@ -7,7 +7,7 @@
 #include "AdvancedMovementComponent.generated.h"
 
 // CMC network breakdown
-// First on tick the perform move function is called, which executes all the movement logic
+// First in tick the perform move function is called, which executes all the movement logic
 // Then it creates a saved move, and uses SetMoveFor to read the safe values and store them in the saved values
 // Calls canCombineMoveWith to check if there are any identical moves that can be combined to save bandwidth if necessary
 // Then Calls getCompressed flags to reduce the saved move into the small networkable packet that it sends to the server
@@ -18,8 +18,6 @@
 // You can only call moves that alter safe variables on the client
 // You can alter movement safe variables in non safe momement functions on the client
 // You should never utilize non movement safe variables in a movement safe function so don't call non movement safe functions that alter movement safe variables on the server
-
-
 
 
 /*

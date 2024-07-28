@@ -75,13 +75,14 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 
 	// Mantling
 	bUseMantling = true;
+	MantleSpeed = 200.0;
 	MantleLedgeLocationOffset = -55;
-	MantleSpeed = 100;
+	MantleSurfaceTraceFromLedgeOffset = 10;
 	MantleTraceDistance = 45;
 	MantleSecondTraceDistance = 90;
 	MantleTraceHeightOffset = 10;
-	ClimbLocationSpaceOffset = 6.4;
-	MantleLocationSpaceOffset = 2;
+	ClimbLocationSpaceOffset = 2.0;
+	MantleLocationSpaceOffset = 2.0;
 	
 	// Ledge Climbing
 	bUseLedgeClimbing = true;
@@ -440,7 +441,7 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 	}
 
 	// null character and root motion checks
-	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	if (!CharacterOwner || !UpdatedComponent || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
 	{
 		Acceleration = FVector::ZeroVector;
 		Velocity = FVector::ZeroVector;
@@ -578,7 +579,7 @@ void UAdvancedMovementComponent::PhysMantling(float deltaTime, int32 Iterations)
 	}
 
 	// null character and root motion checks
-	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	if (!CharacterOwner || !UpdatedComponent || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
 	{
 		Acceleration = FVector::ZeroVector;
 		Velocity = FVector::ZeroVector;
@@ -652,7 +653,7 @@ void UAdvancedMovementComponent::PhysLedgeClimbing(float deltaTime, int32 Iterat
 	}
 
 	// null character and root motion checks
-	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	if (!CharacterOwner || !UpdatedComponent || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
 	{
 		Acceleration = FVector::ZeroVector;
 		Velocity = FVector::ZeroVector;
@@ -715,7 +716,7 @@ void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iteratio
 	}
 	
 	// null character and root motion checks
-	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	if (!CharacterOwner || !UpdatedComponent || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
 	{
 		Acceleration = FVector::ZeroVector;
 		Velocity = FVector::ZeroVector;
@@ -1461,6 +1462,8 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 
 void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector Boost, FString PrevState)
 {
+	if (!UpdatedComponent) return;
+	
 	// Most velocity calculation happens when the character is already sliding alongside the wall, and we need a calculation that's net safe for handling every scenario safely
 	CurrentWallJumpCount++;
 	FVector WallJump;
@@ -1915,7 +1918,7 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 		MantleObjects,
 		false,
 		CharacterActors,
-		EDrawDebugTrace::ForDuration, // bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
 		Wall,
 		true,
 		FColor::Emerald,
@@ -1929,7 +1932,7 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 	}
 
 	// Search for a valid ledge
-	const FVector LedgeSurfaceEnd = Wall.Location + (UpdatedComponent->GetForwardVector() * CharacterRadius);
+	const FVector LedgeSurfaceEnd = Wall.Location + (UpdatedComponent->GetForwardVector() * MantleSurfaceTraceFromLedgeOffset);
 	const FVector LedgeSurfaceStart = LedgeSurfaceEnd + FVector(0, 0, MantleSecondTraceDistance);
 	FHitResult Ledge;
 	UKismetSystemLibrary::LineTraceSingleForObjects(
@@ -1939,7 +1942,7 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 		MantleObjects,
 		false,
 		CharacterActors,
-		EDrawDebugTrace::ForDuration, // bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
 		Ledge,
 		true,
 		FColor::Emerald,
@@ -1953,7 +1956,7 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 	}
 	
 	// Check if the player is able to climb to it, and if they have to crouch
-	FVector FrontOfLedgeMidpoint = Ledge.Location - (UpdatedComponent->GetForwardVector() * (CharacterRadius * 2 + ClimbLocationSpaceOffset)) + FVector(0, 0, MantleTraceHeightOffset + CharacterHemisphereHeight);
+	FVector FrontOfLedgeMidpoint = Ledge.Location - (UpdatedComponent->GetForwardVector() * (MantleSurfaceTraceFromLedgeOffset + CharacterRadius + ClimbLocationSpaceOffset)) + FVector(0, 0, MantleTraceHeightOffset + CharacterHemisphereHeight);
 	FVector ClimbStart = FrontOfLedgeMidpoint + (FVector(0, 0, CharacterHalfHeightNoHemisphere * 2)) - FVector(0, 0, MantleTraceHeightOffset);
 	FVector ClimbEnd = FVector(ClimbStart.X, ClimbStart.Y, UpdatedComponent->GetComponentLocation().Z + MantleTraceHeightOffset - CharacterHalfHeightNoHemisphere);
 	FHitResult ClimbSpace;
@@ -1965,7 +1968,7 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 		MantleObjects,
 		false,
 		CharacterActors,
-		EDrawDebugTrace::ForDuration, // bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
+		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
 		ClimbSpace,
 		true,
 		FColor::Emerald,
@@ -2006,7 +2009,9 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 	// Calculate the mantle location
 	LedgeClimbLocation = Ledge.Location;
 	LedgeClimbNormal = Ledge.Normal;
-	MantleLedgeLocation = LedgeClimbLocation - UpdatedComponent->GetForwardVector() * (MantleLocationSpaceOffset + CharacterRadius * 2) + FVector(0, 0, MantleLedgeLocationOffset);
+	MantleLedgeLocation = LedgeClimbLocation
+		- UpdatedComponent->GetForwardVector() * (MantleSurfaceTraceFromLedgeOffset + CharacterRadius + ClimbLocationSpaceOffset + MantleLocationSpaceOffset)
+		+ FVector(0, 0, MantleLedgeLocationOffset);
 	if (bDebugMantleAndClimbTrace)
 	{
 		DrawDebugCapsule(

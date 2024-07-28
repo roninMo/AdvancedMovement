@@ -390,7 +390,7 @@ protected:
 	bool bUseMantling;
 
 	/** The speed at which the player transitions to the mantle location */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "500", EditCondition = "bUseMantling", EditConditionHides)) 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "343", EditCondition = "bUseMantling", EditConditionHides)) 
 	float MantleSpeed;
 
 	/** The curve that adjusts the speed to allow for smooth interpolations and adjustments. To make things less complicated these are a value between 0-10 */
@@ -400,6 +400,10 @@ protected:
 	/** The offset for when the player is mantling on a ledge */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseMantling", EditConditionHides)) 
 	float MantleLedgeLocationOffset;
+
+	/** The distance from the ledge the trace should be. This is used in order to determine where to place the character */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleSurfaceTraceFromLedgeOffset;
 
 	/** The distance of the trace, used for determining whether you're able to vault over something */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "25", UIMax = "200", EditCondition = "bUseMantling", EditConditionHides)) 

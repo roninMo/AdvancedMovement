@@ -374,6 +374,9 @@ protected:
 	/** The previous location the player had started wall climbing */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing") FVector PrevWallClimbLocation;
 
+	/** The previous wall normal of the wall the player started climbing */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing") FVector PrevWallClimbNormal;
+
 	/** When the player had began climbing */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing") float WallClimbStartTime;
 	
@@ -529,7 +532,7 @@ protected:
 	float WallRunSpeedThreshold;
 
 	/** The acceptable angle the character can be facing while running alongside a wall. ex: 30 -> 90-30 to 90+30  */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "90", EditCondition = "bUseWallRunning", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "45", EditCondition = "bUseWallRunning", EditConditionHides))
 	float WallRunAcceptableAngleRadius;
 
 	/** If a player is wall running on the same wall, what is the acceptable height difference to wall jump an additional time */

@@ -1191,6 +1191,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 		if (CanWallClimb() && Angle < WallClimbAcceptableAngle)
 		{
 			PrevWallClimbLocation = Hit.Location;
+			PrevWallClimbNormal = Hit.ImpactNormal;
 			SetMovementMode(MOVE_Custom, MOVE_Custom_WallClimbing);
 			StartNewPhysics(deltaTime, Iterations);
 		}
@@ -1201,7 +1202,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 		{
 			WallRunWall = Hit.GetComponent();
 			WallRunNormal = Hit.Normal;
-			WallRunLocation = Hit.Location;
+			WallRunLocation = Hit.ImpactNormal;
 			SetMovementMode(MOVE_Custom, MOVE_Custom_WallRunning);
 			StartNewPhysics(deltaTime, Iterations);
 		}
@@ -1385,7 +1386,7 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 	if (!WallJumpPressed) return false;
 
 	// Don't allow any of those extra wall jumps
-	if (CurrentWallJumpCount >= WallJumpLimit) return false;
+	if (WallJumpLimit != 0 && CurrentWallJumpCount >= WallJumpLimit) return false;
 
 	// Prevent wall jumping immediately and wasting another jump (We use distance instead of height to account for ledges and all scenarios)
 	if ((UpdatedComponent->GetComponentLocation() - PreviousGroundLocation).Size() < WallJumpHeightFromGroundThreshold ) return false;
@@ -1474,7 +1475,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 	FVector WallJump;
 	if (IsCustomMovementMode(MOVE_Custom_WallClimbing))
 	{
-		WallJump = Wall.Normal;
+		WallJump = Wall.ImpactNormal;
 		WallJump.Z = 1;
 	}
 	else if (IsCustomMovementMode(MOVE_Custom_WallRunning))
@@ -1535,25 +1536,28 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 	const FVector RedirectedVelocity = FVector(WallJump.X, WallJump.Y, 0) * FMath::Max(CurrentSpeed, Speed);
 	Velocity = RedirectedVelocity + (WallJump * Boost);
 	PrevWallJumpNormal = Wall.ImpactNormal;
-
 	
 	SetMovementMode(MOVE_Falling);
 	StartNewPhysics(TimeTick, Iterations);
 	EnableStrafeSwayPhysics();
+
 	
 	if (bDebugWallJumpTrajectory)
 	{
-		UE_LOGFMT(LogTemp, Log, "{0}::WallJump ({1}) ->  ({2})({3}) RedirectedVel: ({4}), Vel: ({5}), Boost: ({6}), CapturedSpeed: ({7})",
+		UE_LOGFMT(LogTemp, Log, "{0}::WallJump ({1}) ->  ({2})({3}) Initial/RedirectedVel: ({4})({5}), Boost: ({6}), CapturedSpeed: ({7})",
 			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
 			*PrevState,
 			*GetMovementDirection(PlayerInput),
 			*FString::SanitizeFloat(Speed),
-			*RedirectedVelocity.ToString(),
 			*Velocity.ToString(),
+			*RedirectedVelocity.ToString(),
 			*Boost.ToString(),
 			*FString::SanitizeFloat(CurrentSpeed)
 		);
-		
+	}
+	
+	if (bDebugWallJumpTrace)
+	{
 		DrawDebugBox(GetWorld(), PreviousGroundLocation, FVector(10), FColor::Blue, false, 5);
 		DrawDebugLine(GetWorld(), UpdatedComponent->GetComponentLocation(), UpdatedComponent->GetComponentLocation() + (WallJump * 250), FColor::Red, false, 5);
 	}
@@ -1879,6 +1883,9 @@ void UAdvancedMovementComponent::EnterWallClimb(EMovementMode PrevMode, ECustomM
 void UAdvancedMovementComponent::ExitWallClimb()
 {
 	PrevWallClimbTime = Time;
+	
+	// This prevents the wall jump from being redirected if they wall jump out of a wall climb or a mantle 
+	PreviousGroundLocation = UpdatedComponent->GetComponentLocation() + PrevWallClimbNormal * 100;
 }
 
 
@@ -2069,6 +2076,9 @@ void UAdvancedMovementComponent::ExitMantle()
 	MantleStartTime = 0;
 	MantleStartLocation = FVector();
 	MantleLedgeLocation = FVector();
+	
+	// This prevents the wall jump from being redirected if they wall jump out of a wall climb or a mantle 
+	PreviousGroundLocation = UpdatedComponent->GetComponentLocation() + PrevWallClimbNormal * 100;
 }
 
 
@@ -2124,10 +2134,13 @@ bool UAdvancedMovementComponent::CanWallRun(const FHitResult& Wall) const
 	if (PlayerInput.Y < 0.1 && PlayerInput.Y > -0.1) return false;
 
 	// If it's the same wall, it needs to be at a lower height
-	if (WallRunWall && WallRunWall == Wall.GetComponent() && WallRunLocation.Z - Wall.Location.Z < WallRunHeightThreshold) return false;
-	
-	// It needs to be a different wall
-	if (WallRunWall && WallRunWall == Wall.GetComponent()) return false;
+	if (WallRunLocation.Z - Wall.Location.Z < WallRunHeightThreshold)
+	{
+		if (WallRunWall && WallRunWall == Wall.GetComponent())
+		{
+			return false;
+		}
+	}
 	
 	return true;
 }

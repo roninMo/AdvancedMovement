@@ -1533,6 +1533,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 		{
 			WallJump = FVector(WallJump.X, WallJump.Y, 0.5);
 		}
+
 	}
 	
 	
@@ -1543,8 +1544,8 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 	PrevWallJumpNormal = Wall.ImpactNormal;
 	
 	SetMovementMode(MOVE_Falling);
-	StartNewPhysics(TimeTick, Iterations);
 	EnableStrafeSwayPhysics();
+	StartNewPhysics(TimeTick, Iterations);
 
 	
 	if (bDebugWallJumpTrajectory)
@@ -1562,7 +1563,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 			DebugPrevLocation = FVector();
 		}
 		
-		UE_LOGFMT(LogTemp, Warning, "{0}::WallJump ({1}) ->  ({2})({3}) Initial/RedirectedVel: ({4})({5}), Boost: ({6}), CapturedSpeed: ({7}), Wall/Prev Location: ({8})({9})",
+		UE_LOGFMT(LogTemp, Warning, "{0}::WallJump ({1}) ->  ({2})({3}) Initial/Vel: ({4})({5}), Boost: ({6}), CapturedSpeed: ({7}), Wall/Prev Location: ({8})({9})",
 			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
 			*PrevState,
 			*GetMovementDirection(PlayerInput),

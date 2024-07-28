@@ -334,6 +334,39 @@ protected:
 	
 
 //----------------------------------------------------------------------------------------------------------------------------------//
+// Mantle Jumping																													//
+//----------------------------------------------------------------------------------------------------------------------------------//
+protected:
+	/** Uses Mantle Jumping */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)") 
+	bool bUseMantleJumping;
+	
+	/** The duration after a ledge climb that is valid for mantle jumping */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(UIMin = "0", UIMax = "1", EditCondition = "bUseMantleJumping", EditConditionHides))
+	float MantleJumpDuration = 0.2;
+	
+	/** The speed of mantle jumps */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseMantleJumping", EditConditionHides))
+	float MantleJumpSpeed;
+	
+	/** An additional velocity multiplier to adjust the mantle jump's velocity */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(EditCondition = "bUseMantleJumping", EditConditionHides))
+	FVector2D MantleJumpBoost;
+
+	/** Mantle Jump information */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump|Debug", meta=(EditCondition = "bUseMantleJumping", EditConditionHides))
+	bool bDebugMantleJump;
+
+
+protected:
+	/** The time the player starts a mantle jump */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jumping") float MantleJumpStartTime;
+
+	/** The mantle jump location */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jumping") FVector MantleJumpLocation;
+	
+	
+//----------------------------------------------------------------------------------------------------------------------------------//
 // Wall Climbing																													//
 //----------------------------------------------------------------------------------------------------------------------------------//
 protected:
@@ -510,7 +543,7 @@ protected:
 	/** When the player ledge climbs, they move through the ledge, so we need to adjust the collision to handle this. This also let's you decide the responses for other channels */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") 
 	FCollisionResponseContainer CapturedCollisionResponsesOutsideOfLedgeClimbing;
-	
+
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Wall Running																														//
@@ -774,8 +807,11 @@ protected:
 		const FVector& OldLocation, const FVector& OldVelocity, const FQuat& PawnRotation, FVector& Adjusted,
 		bool bHasLimitedAirControl, FVector& Gravity, float& GravityTime); 
 
-	/** Checks if there's a valid wall to wall jump from either the safeMoveUpdatedComponent and additional logic. Also captures the wall jump angle for necessary calculations
+	/**
+	 * Checks if there's a valid wall to wall jump from either the safeMoveUpdatedComponent and additional logic. Also captures the wall jump angle for necessary calculations
+	 *
 	 * @returns true if the player is trying to jump and there's a valid wall to wall jump from
+	 *
 	 * @note SafeMoveUpdatedComponent adjusts the velocity, but it's kind of buggy when you're handling multiple objects in the way of the character's movements, so this is handled on it's own
 	 */
 	virtual bool WallJumpValid(float deltaTime, const FVector& OldLocation, const FVector& InputVector, FHitResult& JumpHit, const FHitResult& Hit); 
@@ -783,14 +819,24 @@ protected:
 	/**
 	 * Calculates the wall jump trajectory and performs the wall jump. Always invoke WallJumpValid() before calculating the trajectory
 	 *
-	 * @param Wall				The wall they're jumping off of
-	 * @param TimeTick			The current time tick
+	 * @param DeltaTime			The current time tick
 	 * @param Iterations		The current physics step iteration
+	 * @param Wall				The wall they're jumping off of
 	 * @param Speed				The speed of the wall jump
 	 * @param Boost				The speed multiplier for the wall jump
 	 * @param PrevState			This is used for debugging to determine the logic before the wall jump
 	 */
-	virtual void CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector2D Boost, FString PrevState = FString("Falling"));
+	virtual void CalculateWallJumpTrajectory(float DeltaTime, int32 Iterations, const FHitResult& Wall, float Speed, FVector2D Boost, FString PrevState = FString("Falling"));
+
+	/** Checks if the jump happened after mantling */
+	UFUNCTION(BlueprintCallable) virtual bool IsMantleJump();
+	
+	/**
+	 * Calculates the mantle jump trajectory and performs the mantle jump
+	 *
+	 * @param SpeedBoost		The speed multiplier for the wall jump
+	 */
+	virtual void CalculateMantleJumpTrajectory(FVector2D SpeedBoost);
 
 	/** Captures information for wall jumping during different movement modes when the movement mode has been updated */
 	virtual void ResetWallJumpInformation(EMovementMode PrevMode, uint8 PrevCustomMode);

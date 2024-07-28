@@ -481,7 +481,7 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 		FHitResult JumpHit;
 		if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, FHitResult()))
 		{
-			CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoostDuringWallClimbs, FString("WallClimb"));
+			CalculateWallJumpTrajectory(timeTick, Iterations, JumpHit, WallJumpSpeed, WallJumpBoostDuringWallClimbs, FString("WallClimb"));
 			return;
 		}
 		
@@ -703,6 +703,7 @@ void UAdvancedMovementComponent::PhysLedgeClimbing(float deltaTime, int32 Iterat
 		}
 		else
 		{
+			Velocity = FVector();
 			SetMovementMode(MOVE_Walking);
 			StartNewPhysics(deltaTime, Iterations);
 			return;
@@ -755,7 +756,7 @@ void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iteratio
 		FHitResult JumpHit;
 		if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, FHitResult()))
 		{
-			CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoostDuringWallRuns, FString("WallRun"));
+			CalculateWallJumpTrajectory(timeTick, Iterations, JumpHit, WallJumpSpeed, WallJumpBoostDuringWallRuns, FString("WallRun"));
 			return;
 		}
 
@@ -1166,7 +1167,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 	FHitResult JumpHit;
 	if (WallJumpValid(deltaTime, OldLocation, AccelDir, JumpHit, Hit))
 	{
-		CalculateWallJumpTrajectory(JumpHit, timeTick, Iterations, WallJumpSpeed, WallJumpBoost, FString("Air Strafe"));
+		CalculateWallJumpTrajectory(timeTick, Iterations, JumpHit, WallJumpSpeed, WallJumpBoost, FString("Air Strafe"));
 		return;
 	}
 	
@@ -1470,7 +1471,41 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 }
 
 
-void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector2D Boost, FString PrevState)
+bool UAdvancedMovementComponent::IsMantleJump()
+{
+	if (MantleJumpStartTime + MantleJumpDuration < Time)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+
+void UAdvancedMovementComponent::CalculateMantleJumpTrajectory(const FVector2D SpeedBoost)
+{
+	const FVector AccelDir = Acceleration.GetSafeNormal();
+	const FVector OldVelocity = Velocity;
+
+	const FVector AddedVelocity = AccelDir * FVector(SpeedBoost.X, SpeedBoost.X, SpeedBoost.Y);
+	Velocity += AddedVelocity;
+
+	if (bDebugMantleJump)
+	{
+		UE_LOGFMT(LogTemp, Warning, "{0}::MantleJump ({1}) ->  ({2})({3}) Initial/Vel: ({4})({5}), AdditionalVelocity: ({6})",
+			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
+			*FString::SanitizeFloat(Time),
+			*GetMovementDirection(PlayerInput),
+			Velocity.Size(),
+			*OldVelocity.ToString(),
+			*Velocity.ToString(),
+			*AddedVelocity.ToString()
+		);
+	}
+}
+
+
+void UAdvancedMovementComponent::CalculateWallJumpTrajectory(float DeltaTime, int32 Iterations, const FHitResult& Wall, float Speed, FVector2D Boost, FString PrevState)
 {
 	if (!UpdatedComponent) return;
 	
@@ -1545,7 +1580,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 	
 	SetMovementMode(MOVE_Falling);
 	EnableStrafeSwayPhysics();
-	StartNewPhysics(TimeTick, Iterations);
+	StartNewPhysics(DeltaTime, Iterations);
 
 	
 	if (bDebugWallJumpTrajectory)
@@ -2392,6 +2427,12 @@ bool UAdvancedMovementComponent::DoJump(bool bReplayingMoves)
 		// Don't jump if we can't move up/down.
 		if (!bConstrainToPlane || FMath::Abs(PlaneConstraintNormal.Z) != 1.f)
 		{
+			// Mantle Jumping
+			if (IsMantleJump())
+			{
+				CalculateMantleJumpTrajectory(MantleJumpBoost);
+			}
+			
 			// Jump forward boost for slide jumps
 			if (IsSliding())
 			{

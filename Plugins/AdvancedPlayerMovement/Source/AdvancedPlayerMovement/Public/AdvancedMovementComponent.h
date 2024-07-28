@@ -389,30 +389,18 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)") 
 	bool bUseMantling;
 
+	/** The speed at which the player transitions to the mantle location */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "500", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleSpeed;
+
+	/** The curve that adjusts the speed to allow for smooth interpolations and adjustments. To make things less complicated these are a value between 0-10 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(EditCondition = "bUseMantling", EditConditionHides)) 
+	UCurveFloat* MantleSpeedAdjustments;
+	
 	/** The offset for when the player is mantling on a ledge */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseMantling", EditConditionHides)) 
 	float MantleLedgeLocationOffset;
 
-	/** The speed at which the player transitions to the mantle location */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseMantling", EditConditionHides)) 
-	float MantleSpeed;
-
-	/** The curve that adjusts the speed to allow for smooth interpolations and adjustments */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(EditCondition = "bUseMantling", EditConditionHides)) 
-	UCurveFloat* MantleSpeedAdjustments;
-
-	/** The speed at which the player rotates to the mantle location */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseMantling", EditConditionHides)) 
-	float MantleRotationSpeed;
-
-	/** The curve that adjusts the rotation speed to allow for smooth interpolations and adjustments */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(EditCondition = "bUseMantling", EditConditionHides)) 
-	UCurveFloat* MantleRotationSpeedAdjustments;
-	
-	/** The height offset for traces when checking for a wall */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
-	float MantleTraceHeightOffset;
-	
 	/** The distance of the trace, used for determining whether you're able to vault over something */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "25", UIMax = "200", EditCondition = "bUseMantling", EditConditionHides)) 
 	float MantleTraceDistance;
@@ -420,6 +408,18 @@ protected:
 	/** The distance of the trace that goes up and checks for the surface */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "20", UIMax = "200", EditCondition = "bUseMantling", EditConditionHides))
 	float MantleSecondTraceDistance;
+	
+	/** The height offset for traces when checking for a wall */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleTraceHeightOffset;
+
+	/** The climb space offset for checking if there's room for the player to climb */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
+	float ClimbLocationSpaceOffset;
+
+	/** The offset spacing for the character's mantle location (How far they're character is away from the edge, used to prevent phasing into the wall) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleLocationSpaceOffset;
 
 	/** The types of objects the player is allowed to mantle on */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(EditCondition = "bUseMantling", EditConditionHides)) 
@@ -444,9 +444,6 @@ protected:
 	/** The mantle ledge location */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling") FVector MantleLedgeLocation;
 
-	/** The mantle rotation */
-	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling") FRotator MantleRotation;
-	
 
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Ledge Climbing																													//
@@ -460,6 +457,14 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing", meta=(EditCondition = "bUseLedgeClimbing", EditConditionHides)) 
 	TMap<EClimbType, FLedgeClimbInformation> LedgeClimbVariations;
 
+	/** The height offset for adjusting the player's placement on the ledge */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing", meta=(UIMin = "0.0", UIMax = "100", EditCondition = "bUseLedgeClimbing", EditConditionHides))
+	float LedgeClimbOffset;
+	
+	/** When the player ledge climbs, they move through the ledge, so we need to adjust the collision to handle this. This also let's you decide the responses for other channels */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing", meta=(EditCondition = "bUseLedgeClimbing", EditConditionHides)) 
+	FCollisionResponseContainer CollisionResponsesDuringLedgeClimbing;
+	
 	/** Mantle information */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing|Debug", meta=(EditCondition = "bUseLedgeClimbing", EditConditionHides))
 	bool bDebugLedgeClimb;
@@ -475,9 +480,21 @@ protected:
 	/** The ledge climb location */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") FVector LedgeClimbLocation;
 	
+	/** The ledge climb normal */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") FVector LedgeClimbNormal;
+	
 	/** The variation of ledge climb the player is performing */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") EClimbType ClimbType;
 
+	/** The current ledge climb variation's speed */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") float CurrentClimbSpeed;
+
+	/** The current ledge climb variation's speed adjustments */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") UCurveFloat* CurrentClimbSpeedAdjustments;
+
+	/** When the player ledge climbs, they move through the ledge, so we need to adjust the collision to handle this. This also let's you decide the responses for other channels */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") 
+	FCollisionResponseContainer CapturedCollisionResponsesOutsideOfLedgeClimbing;
 	
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
@@ -589,6 +606,9 @@ protected:
 // Other																															//
 //----------------------------------------------------------------------------------------------------------------------------------//
 protected:
+	/** The physics channel for tracing against objects in the world */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)") TEnumAsByte<ETraceTypeQuery> MovementChannel;
+	
 	/** land movement and information */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugGroundMovement;
 	
@@ -597,9 +617,9 @@ protected:
 
 	/** Debug movement mode */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugMovementMode;
-
+	
 	/** The physics channel for tracing against objects in the world */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)") TEnumAsByte<ETraceTypeQuery> MovementChannel;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)") float TraceDuration;
 	
 
 //-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------//
@@ -825,6 +845,20 @@ public:
 
 	
 protected:
+	/**
+	 * Interp logic for handling movement transitions for mantling and ledge climbing. It let's you interp at different speeds with a float curve to create your own ease in adjustments
+	 * I use this for both with the intention of using the OnMovementModeUpdated() (without root motion) or just an anim bp (since these are custom modes) with these because they're net safe and have smooth logic
+	 * 
+	 * @param DeltaTime					Time slice for this operation
+	 * @param StartLocation				The location at the beginning of the interp
+	 * @param TargetLocation			The target location
+	 * @param CurrentLocation			The player's current location
+	 * @param Speed						The raw speed of the interp
+	 * @param SpeedAdjustments			The float curve used for adjusting the speed at different intervals
+	 * @returns the move's adjusted value (with delta time factored in)
+	 */
+	UFUNCTION(BlueprintCallable) virtual FVector MantleAndClimbInterp(float DeltaTime, FVector StartLocation, FVector TargetLocation, FVector CurrentLocation, float Speed, UCurveFloat* SpeedAdjustments) const;
+	
 	/** Enter wall mantle logic */
 	virtual void EnterMantle(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode);
 
@@ -1063,6 +1097,15 @@ public:
 
 	/** Returns the custom movement mode */
 	UFUNCTION(BlueprintCallable) virtual ECustomMovementMode GetCustomMovementMode() const;
+
+	/** Returns the mantle ledge location */
+	UFUNCTION(BlueprintCallable) virtual FVector GetMantleLedgeLocation() const;
+	
+	/** Returns the ledge climb location */
+	UFUNCTION(BlueprintCallable) virtual FVector GetLedgeClimbLocation() const;
+	
+	/** Returns the ledge climb normal */
+	UFUNCTION(BlueprintCallable) virtual FVector GetLedgeClimbNormal() const;
 
 	
 //------------------------------------------------------------------------------//

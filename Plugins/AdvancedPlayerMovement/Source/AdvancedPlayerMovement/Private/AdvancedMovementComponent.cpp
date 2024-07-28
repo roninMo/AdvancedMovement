@@ -62,6 +62,11 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	WallJumpHeightFromGroundThreshold = 64.0;
 	WallJumpSpacing = 50;
 
+	// Mantle Jumping
+	bUseMantleJumping = true;
+	MantleJumpDuration = 0.2;
+	MantleJumpBoost = FVector2D(690, 330);
+	
 	// Wall Climbing
 	bUseWallClimbing = true;
 	WallClimbDuration = 1.5;
@@ -704,6 +709,9 @@ void UAdvancedMovementComponent::PhysLedgeClimbing(float deltaTime, int32 Iterat
 		else
 		{
 			Velocity = FVector();
+			MantleJumpStartTime = Time;
+			MantleJumpLocation = UpdatedComponent->GetComponentLocation();
+			
 			SetMovementMode(MOVE_Walking);
 			StartNewPhysics(deltaTime, Iterations);
 			return;

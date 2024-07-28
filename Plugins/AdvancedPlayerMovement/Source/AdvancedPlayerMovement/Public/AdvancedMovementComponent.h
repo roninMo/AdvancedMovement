@@ -343,11 +343,7 @@ protected:
 	
 	/** The duration after a ledge climb that is valid for mantle jumping */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(UIMin = "0", UIMax = "1", EditCondition = "bUseMantleJumping", EditConditionHides))
-	float MantleJumpDuration = 0.2;
-	
-	/** The speed of mantle jumps */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseMantleJumping", EditConditionHides))
-	float MantleJumpSpeed;
+	float MantleJumpDuration;
 	
 	/** An additional velocity multiplier to adjust the mantle jump's velocity */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(EditCondition = "bUseMantleJumping", EditConditionHides))

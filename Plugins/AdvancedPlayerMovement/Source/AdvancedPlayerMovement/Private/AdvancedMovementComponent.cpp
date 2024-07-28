@@ -54,12 +54,13 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	// Wall Jumping
 	bUseWallJumping = true;
 	WallJumpSpeed = 640;
-	WallJumpBoost = FVector(100, 100, 640);
-	WallJumpBoostDuringWallClimbs = FVector(164, 164, 340);
-	WallJumpBoostDuringWallRuns = FVector(340, 340, 540);
+	WallJumpBoost = FVector2D(100, 640);
+	WallJumpBoostDuringWallClimbs = FVector2D(164, 340);
+	WallJumpBoostDuringWallRuns = FVector2D(340, 540);
 	WallJumpLimit = 2;
 	WallJumpValidDistance = 45;
 	WallJumpHeightFromGroundThreshold = 64.0;
+	WallJumpSpacing = 50;
 
 	// Wall Climbing
 	bUseWallClimbing = true;
@@ -67,7 +68,7 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	WallClimbInterval = 0.74;
 	WallClimbSpeed = 400;
 	WallClimbAcceleration = 20;
-	WallClimbMultiplier = FVector(0.64, 0.64, 1);
+	WallClimbMultiplier = FVector2D(0.64, 1);
 	WallClimbAcceptableAngle = 45;
 	WallClimbFriction = 2.5;
 	WallClimbAddSpeedThreshold = -10;
@@ -82,6 +83,9 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	MantleTraceHeightOffset = 10;
 	ClimbLocationSpaceOffset = 2.0;
 	MantleLocationSpaceOffset = 2.0;
+	MantleObjects.Add(EObjectTypeQuery::ObjectTypeQuery1);
+	MantleObjects.Add(EObjectTypeQuery::ObjectTypeQuery2);
+	MantleObjects.Add(EObjectTypeQuery::ObjectTypeQuery5);
 	
 	// Ledge Climbing
 	bUseLedgeClimbing = true;
@@ -96,8 +100,8 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	bUseWallRunning = true;
 	WallRunDuration = 2;
 	WallRunSpeed = 740;
-	WallRunAcceleration = 400;
-	WallRunMultiplier = FVector(1, 1, 0);
+	WallRunAcceleration = 7.4;
+	WallRunMultiplier = FVector2D(1, 0);
 	WallRunSpeedThreshold = 600;
 	WallRunAcceptableAngleRadius = 30;
 	WallRunHeightThreshold = 300;
@@ -448,7 +452,7 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 	}
 
 	// Wall climb duration
-	if (WallClimbStartTime + WallClimbDuration < Time)
+	if (WallClimbDuration != 0 && WallClimbStartTime + WallClimbDuration < Time)
 	{
 		SetMovementMode(MOVE_Falling);
 		StartNewPhysics(deltaTime, Iterations);
@@ -501,7 +505,7 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 			if (Velocity.Z > WallClimbAddSpeedThreshold)
 			{
 				// if they aren't climbing don't add vertical speed, however add a multiplier for how much speed should be added, and limit it to their input
-				WallClimbVector = FVector(AccelDir.X * WallClimbMultiplier.X, AccelDir.Y * WallClimbMultiplier.Y, UKismetMathLibrary::MapRangeClamped(PlayerInput.X, 0, 1, 0, WallClimbMultiplier.Z));
+				WallClimbVector = FVector(AccelDir.X * WallClimbMultiplier.X, AccelDir.Y * WallClimbMultiplier.X, UKismetMathLibrary::MapRangeClamped(PlayerInput.X, 0, 1, 0, WallClimbMultiplier.Y));
 				Velocity = FVector(Velocity + WallClimbVector * WallClimbAcceleration).GetClampedToSize(0, WallClimbSpeed);
 				Adjusted = Velocity * timeTick;
 			}
@@ -633,7 +637,7 @@ void UAdvancedMovementComponent::PhysMantling(float deltaTime, int32 Iterations)
 		else
 		{
 			// if the player presses forward, climb up on the ledge.
-			if (PlayerInput.X > 0.1)
+			if (bUseLedgeClimbing && PlayerInput.X > 0.1)
 			{
 				SetMovementMode(MOVE_Custom, MOVE_Custom_LedgeClimbing);
 				StartNewPhysics(deltaTime, Iterations);
@@ -781,8 +785,8 @@ void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iteratio
 			if (bShouldRunBackwardsIfFacingAwayFromWall && WallDirection > 0) WallRunDirection *= -1;
 			WallRunVector = FVector(
 				FMath::Clamp(CharacterInput.X + WallRunDirection.X, -1, 1) * WallRunMultiplier.X,
-				FMath::Clamp(CharacterInput.Y + WallRunDirection.Y, -1, 1) * WallRunMultiplier.Y,
-				WallRunMultiplier.Z
+				FMath::Clamp(CharacterInput.Y + WallRunDirection.Y, -1, 1) * WallRunMultiplier.X,
+				WallRunMultiplier.Y
 			);
 			
 			if (bDebugWallTraces)
@@ -1002,19 +1006,20 @@ void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, b
 	{
 		if (AirStrafeSwayPhysics && !bDebugStrafeSway) return; // Only debug strafe sway
 		if (!AirStrafeSwayPhysics && !bDebugAirStrafe) return; // Only debug air strafe 
-		
-		UE_LOGFMT(LogTemp, Log, "{0}::{1} ({2}) ->  ({3})({4}) ProjectedVel: ({5}), AddedVel: ({6}), Velocity: ({7}), Speed: ({8}), AddedSpeed: ({9}), AccelDir: {10}, Cap: ({11}), AccelMultiplier: ({12})",
+
+		float PrevSpeed = OldVelocity.Size2D();
+		float Speed = Velocity.Size2D();
+		// Velocity/AccelDir // Speed (+/- Adjusted) // Cap / AccelMultiplier
+		UE_LOGFMT(LogTemp, Log, "{0}::{1} ({2}) ->  ({3})({4}) Vel/AccelDir: ({5})({6}) Speed: ({7})({8}), Cap: ({9}), AccelMultiplier: ({10})",
 			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
-			IsStrafeSwaying() ? *FString("Strafe_Sway") : FString("Air_Strafe"),
+			IsStrafeSwaying() ? *FString("StrafeSway") : FString("AirStrafe"),
 			IsStrafeSwaying() ? *FString::SanitizeFloat(StrafeSwayStartTime + StrafeSwayDuration - Time) : *FString(""),
 			*GetMovementDirection(PlayerInput),
-			ProjVelocity < AirSpeedCap ? FString("+") : FString("-"), // I don't know if this is accurate, just that strafing adds velocity  when the projected velocity is below 0 (and without strafing this value is the player's speed)
-			*FString::SanitizeFloat(ProjVelocity),
-			*AddedVelocity.GetSafeNormal2D().ToString(),
-			*Velocity.GetSafeNormal2D().ToString(),
-			FMath::CeilToInt(FVector(Velocity.X, Velocity.Y, 0).Size()),
-			*FString::SanitizeFloat(AddSpeed),
+			Speed - PrevSpeed > 0 ? *FString("+") : *FString("-"),
+			*Velocity.GetSafeNormal().ToString(),
 			*FVector2D(AccelDir.X, AccelDir.Y).ToString(),
+			*FString::SanitizeFloat(Speed),
+			*FString::SanitizeFloat(Speed - PrevSpeed),
 			FMath::CeilToInt(AirSpeedCap),
 			*FString::SanitizeFloat(AirAccelerationMultiplier)
 		);
@@ -1237,12 +1242,11 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 
 			AirControlDeltaV *= LastMoveTimeSlice;
 			Adjusted = (VelocityNoAirControl + AirControlDeltaV) * LastMoveTimeSlice;
-			if (bDebugAirStrafe)
+			if (bDebugAirStrafeTrace)
 			{
-				// UE_LOGFMT(LogTemp, Log, "VelocityTimeStep: ({0}), AirControlAccel: ({1}), AirControlDeltaV: ({2})", *(Velocity - VelocityNoAirControl).ToString(), *AirControlAccel.ToString(), *AirControlDeltaV.ToString());
-				DrawDebugLine(GetWorld(), OldLocation + FVector(0, 0, 64), (OldLocation + FVector(0, 0, 64)) + (Adjusted.GetSafeNormal() * 100), FColor::Emerald, false, 4);
-				DrawDebugLine(GetWorld(), OldLocation + FVector(0, 0, 30), (OldLocation + FVector(0, 0, 30)) + (AirControlAccel.GetSafeNormal() * 100), FColor::Blue, false, 4);
-				DrawDebugLine(GetWorld(), OldLocation + FVector(0, 0, 27), (OldLocation + FVector(0, 0, 27)) + (AirControlDeltaV.GetSafeNormal() * 100), FColor::Cyan, false, 4);
+				DrawDebugLine(GetWorld(), OldLocation + FVector(0, 0, 64), (OldLocation + FVector(0, 0, 64)) + (Adjusted.GetSafeNormal() * 100), FColor::Emerald, false, TraceDuration);
+				DrawDebugLine(GetWorld(), OldLocation + FVector(0, 0, 30), (OldLocation + FVector(0, 0, 30)) + (AirControlAccel.GetSafeNormal() * 100), FColor::Blue, false, TraceDuration);
+				DrawDebugLine(GetWorld(), OldLocation + FVector(0, 0, 27), (OldLocation + FVector(0, 0, 27)) + (AirControlDeltaV.GetSafeNormal() * 100), FColor::Cyan, false, TraceDuration);
 			}
 		}
 		
@@ -1466,12 +1470,14 @@ bool UAdvancedMovementComponent::WallJumpValid(float deltaTime, const FVector& O
 }
 
 
-void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector Boost, FString PrevState)
+void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector2D Boost, FString PrevState)
 {
 	if (!UpdatedComponent) return;
 	
 	// Most velocity calculation happens when the character is already sliding alongside the wall, and we need a calculation that's net safe for handling every scenario safely
 	CurrentWallJumpCount++;
+	FVector WallLocation;
+	FVector PrevLocation;
 	FVector WallJump;
 	if (IsCustomMovementMode(MOVE_Custom_WallClimbing))
 	{
@@ -1491,9 +1497,10 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 	else
 	{
 		// Calculate the trajectory
-		const FVector WallLocation = FVector(Wall.ImpactPoint.X, Wall.ImpactPoint.Y, 0);
-		const FVector PrevLocation = FVector(PreviousGroundLocation.X, PreviousGroundLocation.Y, 0);
-		if (PrevLocation.Equals(WallLocation, 25)) PreviousGroundLocation += Wall.Normal * 25;
+		WallLocation = FVector(Wall.ImpactPoint.X, Wall.ImpactPoint.Y, 0);
+		PrevLocation = FVector(PreviousGroundLocation.X, PreviousGroundLocation.Y, 0);
+		// if (PrevLocation.Equals(FVector(WallLocation.X, WallLocation.Y, 0), WallJumpSpacing)) PrevLocation += Wall.Normal * WallJumpSpacing;
+		PrevLocation += Wall.Normal * WallJumpSpacing;
 		const FVector CharacterTrajectory = (WallLocation - PrevLocation).GetSafeNormal2D();
 		
 		const float WallAngle = Wall.ImpactNormal.Dot(CharacterTrajectory); // -0.5 or greater is 45^ or less
@@ -1509,15 +1516,14 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 
 			if (bDebugWallJumpTrajectory)
 			{
-				DrawDebugBox(GetWorld(), LocationAlignedToWall, FVector(10), FColor::Red, false, 5);
-				DrawDebugBox(GetWorld(), LocationAlignedToWall + Wall.ImpactNormal * DistanceFromWall, FVector(10), FColor::Orange, false, 5);
+				DrawDebugBox(GetWorld(), LocationAlignedToWall, FVector(10), FColor::Red, false, TraceDuration);
+				DrawDebugBox(GetWorld(), LocationAlignedToWall + Wall.ImpactNormal * DistanceFromWall, FVector(10), FColor::Orange, false, TraceDuration);
 			}
 		}
 		// Fix wall jumps when sliding alongside a wall (during Air Strafing)
 		else if (WallAngle > -0.45)
 		{
 			WallJump = (Velocity.GetSafeNormal2D() - Wall.ImpactNormal) / 2 + Wall.ImpactNormal;
-			if (bDebugWallJumpTrajectory) UE_LOGFMT(LogTemp, Log, "AlongsideWallJump: {0}, Velocity: {1}, ImpactNormal: {2}, WallAngle: {3}", *WallJump.ToString(), *Velocity.GetSafeNormal2D().ToString(), *Wall.ImpactNormal.ToString(), WallAngle);
 		}
 
 		// Wall jump Z velocity is factored in during the boost, and not while redirecting the velocity
@@ -1534,7 +1540,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 	// Wall jump calculations. Their speeds should be static, and also save the player's current velocity
 	const float CurrentSpeed = Velocity.Size2D();
 	const FVector RedirectedVelocity = FVector(WallJump.X, WallJump.Y, 0) * FMath::Max(CurrentSpeed, Speed);
-	Velocity = RedirectedVelocity + (WallJump * Boost);
+	Velocity = RedirectedVelocity + (WallJump * FVector(Boost.X, Boost.X, Boost.Y));
 	PrevWallJumpNormal = Wall.ImpactNormal;
 	
 	SetMovementMode(MOVE_Falling);
@@ -1544,7 +1550,20 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 	
 	if (bDebugWallJumpTrajectory)
 	{
-		UE_LOGFMT(LogTemp, Log, "{0}::WallJump ({1}) ->  ({2})({3}) Initial/RedirectedVel: ({4})({5}), Boost: ({6}), CapturedSpeed: ({7})",
+		FVector DebugWallLocation = WallLocation;
+		FVector DebugPrevLocation = PrevLocation;
+		if (IsCustomMovementMode(MOVE_Custom_WallClimbing))
+		{
+			DebugWallLocation = PrevWallClimbLocation;
+			DebugPrevLocation = PreviousGroundLocation;
+		}
+		if (IsCustomMovementMode(MOVE_Custom_WallRunning))
+		{
+			DebugWallLocation = PrevWallClimbLocation;
+			DebugPrevLocation = FVector();
+		}
+		
+		UE_LOGFMT(LogTemp, Warning, "{0}::WallJump ({1}) ->  ({2})({3}) Initial/RedirectedVel: ({4})({5}), Boost: ({6}), CapturedSpeed: ({7}), Wall/Prev Location: ({8})({9})",
 			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
 			*PrevState,
 			*GetMovementDirection(PlayerInput),
@@ -1552,14 +1571,16 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 			*Velocity.ToString(),
 			*RedirectedVelocity.ToString(),
 			*Boost.ToString(),
-			*FString::SanitizeFloat(CurrentSpeed)
+			*FString::SanitizeFloat(CurrentSpeed),
+			*DebugWallLocation.ToString(),
+			*DebugPrevLocation.ToString()
 		);
 	}
 	
 	if (bDebugWallJumpTrace)
 	{
-		DrawDebugBox(GetWorld(), PreviousGroundLocation, FVector(10), FColor::Blue, false, 5);
-		DrawDebugLine(GetWorld(), UpdatedComponent->GetComponentLocation(), UpdatedComponent->GetComponentLocation() + (WallJump * 250), FColor::Red, false, 5);
+		DrawDebugBox(GetWorld(), PreviousGroundLocation, FVector(10), FColor::Blue, false, TraceDuration);
+		DrawDebugLine(GetWorld(), UpdatedComponent->GetComponentLocation(), UpdatedComponent->GetComponentLocation() + (WallJump * 250), FColor::Red, false, TraceDuration);
 	}
 }
 
@@ -1837,6 +1858,7 @@ void UAdvancedMovementComponent::GroundMovementPhysics(float deltaTime, int32 It
 #pragma region Sliding
 bool UAdvancedMovementComponent::CanSlide() const
 {
+	if (!bUseSliding) return false;
 	if (!CharacterOwner->GetCapsuleComponent() || IsFalling()) return false;
 	if (Velocity.Size2D() < SlideEnterThreshold) return false;
 	return true;
@@ -1867,9 +1889,9 @@ void UAdvancedMovementComponent::ExitSlide()
 #pragma region Wall Running
 bool UAdvancedMovementComponent::CanWallClimb() const
 {
+	if (!bUseWallClimbing) return false;
 	if (WallClimbInterval + PrevWallClimbTime > Time) return false;
 	if (PlayerInput.X < 0.1) return false;
-
 	return true;
 }
 
@@ -1908,6 +1930,7 @@ void UAdvancedMovementComponent::ResetWallClimbInformation(const EMovementMode P
 #pragma region Mantling
 bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 {
+	if (!bUseMantling) return false;
 	if (!UpdatedComponent || !GetWorld() || !CharacterOwner || !CharacterOwner->GetCapsuleComponent()) return false;
 
 	float CharacterRadius = CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleRadius();
@@ -2131,6 +2154,7 @@ void UAdvancedMovementComponent::ExitLedgeClimb()
 #pragma region Wall Running
 bool UAdvancedMovementComponent::CanWallRun(const FHitResult& Wall) const
 {
+	if (!bUseWallRunning) return false;
 	if (PlayerInput.Y < 0.1 && PlayerInput.Y > -0.1) return false;
 
 	// If it's the same wall, it needs to be at a lower height
@@ -2797,8 +2821,8 @@ void UAdvancedMovementComponent::DebugGroundMovement(FString Message, FColor Col
 	GEngine->AddOnScreenDebugMessage(2, 10.f, Color, Message);
 	FVector Start = UpdatedComponent->GetComponentLocation();
 	FVector End = Start + CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() * 2.5f * FVector::DownVector;
-	DrawDebugLine(GetWorld(), Start, End, Color, false, 5.f);
-	if (DrawSphere) DrawDebugSphere(GetWorld(), Start, 10.f, 12, Color, false, 5.f);
+	DrawDebugLine(GetWorld(), Start, End, Color, false, TraceDuration);
+	if (DrawSphere) DrawDebugSphere(GetWorld(), Start, 10.f, 12, Color, false, TraceDuration);
 }
 
 

@@ -233,11 +233,11 @@ protected:
 	float StrafingMaxAcceleration;
 
 	/** How much speed should be gained during air strafing? This is a multiplier based on the character's acceleration */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "5", EditCondition = "bUseBhopping", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "3", EditCondition = "bUseBhopping", EditConditionHides))
 	float AirStrafeSpeedGainMultiplier;
 
 	/** This influences the rotation rate during air strafing while you're gaining speeds. The higher the value, the more you'll be able to gain speed while turning */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "10", EditCondition = "bUseBhopping", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "5", EditCondition = "bUseBhopping", EditConditionHides))
 	float AirStrafeRotationRate;
 
 	/** The raw strafe sway duration of inhibited movement after performing a wall jump */
@@ -245,16 +245,20 @@ protected:
 	float StrafeSwayDuration;
 	
 	/** Speed gained during strafe is tied to the character's acceleration, and this multiplies how much is gained during a strafe */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Sway", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "5", EditCondition = "bUseBhopping", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Sway", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "3.5", EditCondition = "bUseBhopping", EditConditionHides))
 	float StrafeSwaySpeedGainMultiplier;
 
 	/** The rotation rate of the character that allows preserving the player's speed while turning. This is influenced by the character's current speed, so at higher speeds if they try strafing it'll slow them down */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Sway", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "10", EditCondition = "bUseBhopping", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Sway", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "5.5", EditCondition = "bUseBhopping", EditConditionHides))
 	float StrafeSwayRotationRate;
 
 	/** air strafing */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement (General Settings)|Air Strafe|Debug", meta=(EditCondition = "bUseBhopping", EditConditionHides))
 	bool bDebugAirStrafe;
+	
+	/** air strafe traces */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement (General Settings)|Air Strafe|Debug", meta=(EditCondition = "bUseBhopping", EditConditionHides))
+	bool bDebugAirStrafeTrace;
 	
 	/** strafe sway physics */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement (General Settings)|Air Strafe|Debug", meta=(EditCondition = "bUseBhopping", EditConditionHides))
@@ -283,27 +287,31 @@ protected:
 	
 	/** An additional velocity multiplier to adjust the wall jump's velocity gains */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(EditCondition = "bUseWallJumping", EditConditionHides))
-	FVector WallJumpBoost;
+	FVector2D WallJumpBoost;
 
 	/** An additional velocity multiplier during wall climbs to adjust the wall jump's velocity gains */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(EditCondition = "bUseWallJumping", EditConditionHides))
-	FVector WallJumpBoostDuringWallClimbs;
+	FVector2D WallJumpBoostDuringWallClimbs;
 	
 	/** An additional velocity multiplier during wall runs to adjust the wall jump's velocity gains */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(EditCondition = "bUseWallJumping", EditConditionHides))
-	FVector WallJumpBoostDuringWallRuns;
+	FVector2D WallJumpBoostDuringWallRuns;
 	
 	/** How many times is a player allowed to wall jump while in air? If set to 0, there is no limit */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(UIMin = "0", UIMax = "10", EditCondition = "bUseWallJumping", EditConditionHides))
 	int32 WallJumpLimit;
 
 	/** How far away is a wall allowed to for the player to be able to wall jump against */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(UIMin = "0", UIMax = "343", EditCondition = "bUseWallJumping", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(UIMin = "0", UIMax = "100", EditCondition = "bUseWallJumping", EditConditionHides))
 	float WallJumpValidDistance;
 
 	/** How high the character should be from the ground before wall jumping is valid */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(UIMin = "30", UIMax = "100", EditCondition = "bUseWallJumping", EditConditionHides))
 	float WallJumpHeightFromGroundThreshold;
+
+	/** If the player's previous ground location was close to the wall, sometimes the trajectory isn't calculated correctly. This adjusts it by moving it away from the wall to create a valid trajectory */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump", meta=(UIMin = "25", UIMax = "100", EditCondition = "bUseWallJumping", EditConditionHides))
+	float WallJumpSpacing;
 
 	/** wall jump checks/traces */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement (General Settings)|Wall Jump|Debug", meta=(EditCondition = "bUseWallJumping", EditConditionHides))
@@ -333,36 +341,36 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)")
 	bool bUseWallClimbing;
 	
-	/** The duration the player is able to climb a wall. Setting this to zero means there is no duration */ // TODO: add this code
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "10", EditCondition = "bUseWallClimbing", EditConditionHides))
+	/** The duration the player is able to climb a wall. Setting this to zero means there is no duration */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "3", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbDuration;
 
 	/** The interval between when a player is allowed to wall climb if they've already completed a climb */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "10", EditCondition = "bUseWallClimbing", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "3", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbInterval;
 	
 	/** The speed the player climbs the wall */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseWallClimbing", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "500", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbSpeed; 
 
 	/** The player's climb speed acceleration */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseWallClimbing", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "100", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbAcceleration;
 	
-	/** How much speed should factor into wall climbing forwards/sideways/up */
+	/** How much speed should factor into wall climbing forward and sideways/up */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(EditCondition = "bUseWallClimbing", EditConditionHides))
-	FVector WallClimbMultiplier;
+	FVector2D WallClimbMultiplier;
 
 	/** Up to what angle is wall climbing allowed? */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "90", EditCondition = "bUseWallClimbing", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "45", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbAcceptableAngle;
 	
 	/** The friction climbing a wall when a player comes from a falling state */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "10", EditCondition = "bUseWallClimbing", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "5", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbFriction;
 
 	/** If the player was previously falling, what speed do we start adding velocity from? */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMax = "0", ClampMax = "0", EditCondition = "bUseWallClimbing", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "-100", UIMax = "0", ClampMax = "0", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbAddSpeedThreshold;
 
 	/** Wall climbing information */
@@ -401,27 +409,27 @@ protected:
 	UCurveFloat* MantleSpeedAdjustments;
 	
 	/** The offset for when the player is mantling on a ledge */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseMantling", EditConditionHides)) 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
 	float MantleLedgeLocationOffset;
 
 	/** The distance from the ledge the trace should be. This is used in order to determine where to place the character */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "25", EditCondition = "bUseMantling", EditConditionHides)) 
 	float MantleSurfaceTraceFromLedgeOffset;
 
 	/** The distance of the trace, used for determining whether you're able to vault over something */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "25", UIMax = "200", EditCondition = "bUseMantling", EditConditionHides)) 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "25", UIMax = "100", EditCondition = "bUseMantling", EditConditionHides)) 
 	float MantleTraceDistance;
 
 	/** The distance of the trace that goes up and checks for the surface */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "20", UIMax = "200", EditCondition = "bUseMantling", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "50", UIMax = "200", EditCondition = "bUseMantling", EditConditionHides))
 	float MantleSecondTraceDistance;
 	
 	/** The height offset for traces when checking for a wall */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "25", EditCondition = "bUseMantling", EditConditionHides)) 
 	float MantleTraceHeightOffset;
 
 	/** The climb space offset for checking if there's room for the player to climb */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "25", EditCondition = "bUseMantling", EditConditionHides)) 
 	float ClimbLocationSpaceOffset;
 
 	/** The offset spacing for the character's mantle location (How far they're character is away from the edge, used to prevent phasing into the wall) */
@@ -465,7 +473,7 @@ protected:
 	TMap<EClimbType, FLedgeClimbInformation> LedgeClimbVariations;
 
 	/** The height offset for adjusting the player's placement on the ledge */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing", meta=(UIMin = "0.0", UIMax = "100", EditCondition = "bUseLedgeClimbing", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing", meta=(UIMin = "0.0", UIMax = "20", EditCondition = "bUseLedgeClimbing", EditConditionHides))
 	float LedgeClimbOffset;
 	
 	/** When the player ledge climbs, they move through the ledge, so we need to adjust the collision to handle this. This also let's you decide the responses for other channels */
@@ -513,19 +521,20 @@ protected:
 	bool bUseWallRunning;
 	
 	/** The duration the player is able to run alongside a wall */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "10", EditCondition = "bUseWallRunning", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "5", EditCondition = "bUseWallRunning", EditConditionHides))
 	float WallRunDuration;
 
 	/** The speed the player runs alongside the wall */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "1000")) float WallRunSpeed;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseWallRunning", EditConditionHides))
+	float WallRunSpeed;
 
 	/** The player's wall run acceleration */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseWallRunning", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "50", EditCondition = "bUseWallRunning", EditConditionHides))
 	float WallRunAcceleration;
 	
-	/** How much speed should factor into wall running forwards/sideways/up */
+	/** How much speed should factor into wall running forward and sideways/up */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(EditCondition = "bUseWallRunning", EditConditionHides))
-	FVector WallRunMultiplier;
+	FVector2D WallRunMultiplier;
 	
 	/** How quickly the character should be moving before they're allowed to wall run */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseWallRunning", EditConditionHides))
@@ -535,7 +544,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "45", EditCondition = "bUseWallRunning", EditConditionHides))
 	float WallRunAcceptableAngleRadius;
 
-	/** If a player is wall running on the same wall, what is the acceptable height difference to wall jump an additional time */
+	/** If a player starts wall running on the same wall before landing on the ground, what is the acceptable height difference to wall jump an additional time */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "500", EditCondition = "bUseWallRunning", EditConditionHides))
 	float WallRunHeightThreshold;
 
@@ -605,7 +614,7 @@ protected:
 	float SlideBrakingFriction;
 	
 	/** The multiplier added to the slide jump for forward movement */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseSliding", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding", meta=(UIMin = "0", UIMax = "640", EditCondition = "bUseSliding", EditConditionHides))
 	float SlideJumpSpeed;
 	
 	/** sliding information */
@@ -781,7 +790,7 @@ protected:
 	 * @param Boost				The speed multiplier for the wall jump
 	 * @param PrevState			This is used for debugging to determine the logic before the wall jump
 	 */
-	virtual void CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector Boost, FString PrevState = FString("Falling"));
+	virtual void CalculateWallJumpTrajectory(const FHitResult& Wall, float TimeTick, int32 Iterations, float Speed, FVector2D Boost, FString PrevState = FString("Falling"));
 
 	/** Captures information for wall jumping during different movement modes when the movement mode has been updated */
 	virtual void ResetWallJumpInformation(EMovementMode PrevMode, uint8 PrevCustomMode);

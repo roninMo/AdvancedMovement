@@ -544,6 +544,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Wall Running|Debug", meta=(EditCondition = "bUseWallRunning", EditConditionHides))
 	bool bDebugWallRunning;
 
+	/** Wall run trace information */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Wall Running|Debug", meta=(EditCondition = "bUseWallRunning", EditConditionHides))
+	bool bDebugWallTraces;
+
 	
 protected:
 	/** When did they begin wall running? */

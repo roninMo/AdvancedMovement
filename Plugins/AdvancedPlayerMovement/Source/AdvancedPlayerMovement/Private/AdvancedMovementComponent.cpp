@@ -3,7 +3,6 @@
 
 #include "AdvancedMovementComponent.h"
 #include "UnrealUSDWrapper.h"
-#include "Character/BhopCharacter.h"
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
 #include "Kismet/KismetMathLibrary.h"
@@ -101,13 +100,13 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	WallRunMultiplier = FVector(1, 1, 0);
 	WallRunSpeedThreshold = 600;
 	WallRunAcceptableAngleRadius = 30;
-	WallRunHeightThreshold = 100;
+	WallRunHeightThreshold = 300;
 	
 	// // CharacterMovement (General Settings)
 	MaxAcceleration = 1200; // Derived from the Acceleration values 
 	BrakingFrictionFactor = 2;
 	BrakingFriction = 2.5;
-	CrouchedHalfHeight = 64;
+	SetCrouchedHalfHeight(64);
 	bUseSeparateBrakingFriction = true;
 	Mass = 100;
 	DefaultLandMovementMode = EMovementMode::MOVE_Walking;
@@ -774,7 +773,7 @@ void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iteratio
 				// FVector(UKismetMathLibrary::GetForwardVector(CharacterRotation) * PlayerInput.X) +
 				FVector(UKismetMathLibrary::GetRightVector(CharacterRotation) * PlayerInput.Y)
 			).GetSafeNormal();
-
+			
 			// Find which way the character should wall run
 			float WallDirection = WallRunNormal.Dot(UpdatedComponent->GetForwardVector()); // The impact normal of the wall is based on the current surface
 			float PlayerForwardsDirection = UpdatedComponent->GetForwardVector().Dot(WallRunWall->GetRightVector()); // The Get vectors of the wall are to help translate things in world space
@@ -785,6 +784,12 @@ void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iteratio
 				FMath::Clamp(CharacterInput.Y + WallRunDirection.Y, -1, 1) * WallRunMultiplier.Y,
 				WallRunMultiplier.Z
 			);
+			
+			if (bDebugWallTraces)
+			{
+				DrawDebugLine(GetWorld(), OldLocation, OldLocation + WallRunNormal * 50, FColor::Emerald, false, TraceDuration);
+				DrawDebugLine(GetWorld(), OldLocation, OldLocation + WallRunDirection * 100 + FVector(0, 0, 2), FColor::Cyan, false, TraceDuration);
+			}
 
 			// Don't exceed the max speed, but don't slow down current speeds
 			Velocity.Z = 0;

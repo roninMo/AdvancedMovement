@@ -1016,7 +1016,7 @@ void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, b
 			IsStrafeSwaying() ? *FString::SanitizeFloat(StrafeSwayStartTime + StrafeSwayDuration - Time) : *FString(""),
 			*GetMovementDirection(PlayerInput),
 			Speed - PrevSpeed > 0 ? *FString("+") : *FString("-"),
-			*Velocity.GetSafeNormal().ToString(),
+			*Velocity.GetSafeNormal2D().ToString(),
 			*FVector2D(AccelDir.X, AccelDir.Y).ToString(),
 			*FString::SanitizeFloat(Speed),
 			*FString::SanitizeFloat(Speed - PrevSpeed),
@@ -1499,8 +1499,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(const FHitResult& W
 		// Calculate the trajectory
 		WallLocation = FVector(Wall.ImpactPoint.X, Wall.ImpactPoint.Y, 0);
 		PrevLocation = FVector(PreviousGroundLocation.X, PreviousGroundLocation.Y, 0);
-		// if (PrevLocation.Equals(FVector(WallLocation.X, WallLocation.Y, 0), WallJumpSpacing)) PrevLocation += Wall.Normal * WallJumpSpacing;
-		PrevLocation += Wall.Normal * WallJumpSpacing;
+		if (PrevLocation.Equals(FVector(WallLocation.X, WallLocation.Y, 0), WallJumpSpacing)) PrevLocation += Wall.Normal * WallJumpSpacing;
 		const FVector CharacterTrajectory = (WallLocation - PrevLocation).GetSafeNormal2D();
 		
 		const float WallAngle = Wall.ImpactNormal.Dot(CharacterTrajectory); // -0.5 or greater is 45^ or less

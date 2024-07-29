@@ -2,7 +2,6 @@
 
 
 #include "AdvancedMovementComponent.h"
-#include "UnrealUSDWrapper.h"
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
 #include "Kismet/KismetMathLibrary.h"

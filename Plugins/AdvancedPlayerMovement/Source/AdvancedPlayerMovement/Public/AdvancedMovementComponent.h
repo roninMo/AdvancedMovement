@@ -147,7 +147,7 @@ You will also need to extend FCharacterNetworkMoveDataContainer so that it can s
 
 
 /*
-* For handling state use the handleInAirState and handleCrouchState,
+* Bhop like movement inspired by the source engine
 */
 UCLASS()
 class UAdvancedMovementComponent : public UCharacterMovementComponent

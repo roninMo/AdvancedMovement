@@ -28,14 +28,5 @@ protected:
 	UFUNCTION(BlueprintCallable, Category="Movement", DisplayName="Get Character Movement Component")
 	virtual UAdvancedMovementComponent* GetAdvancedCharacterMovementComponent() const;
 
-public:
-	UPROPERTY(BlueprintReadWrite) FVector AdjustedVelocity;
-	UFUNCTION(BlueprintImplementableEvent) void CalculateMantleLocation(
-		float DeltaTime,
-		FVector CurrentLocation,
-		FVector MantleLedgeLocation,
-		FVector Velocity,
-		FVector Adjusted
-	);
-	
+
 };

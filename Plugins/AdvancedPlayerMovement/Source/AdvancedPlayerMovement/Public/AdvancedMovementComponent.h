@@ -6,6 +6,8 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "AdvancedMovementComponent.generated.h"
 
+DECLARE_LOG_CATEGORY_EXTERN(Movement, Log, All);
+
 // CMC network breakdown
 // First in tick the perform move function is called, which executes all the movement logic
 // Then it creates a saved move, and uses SetMoveFor to read the safe values and store them in the saved values
@@ -72,7 +74,7 @@ You will also need to extend FCharacterNetworkMoveDataContainer so that it can s
 // FSavedMove_Character
 * Stores a bunch of information about where you were when you started and ended moving, and the physics and acceleration information
 * The breakdown of how this is used is this:
-	* the ClienData creates a new saved move
+	* the Client Data creates a new saved move
 	* It records the movement
 	* If multiple movements are close to the same then it combines multiple of these movements before sending it to the server
 	* It then calls PerformMovement, which is what the server does immediately
@@ -120,12 +122,24 @@ You will also need to extend FCharacterNetworkMoveDataContainer so that it can s
 				- The only downside to this is hacking, but (I don't know (potentially (I always think I'm lying or doing something bad)) another way of handling this)
 			- Even if they were hacking to exploit things like this, I don't think they'd gain much from doing something like this (other than be incomphrehensibly rude because they don't get the gravity of things or they're just like thirsty or something hoeish)
 			- Either way, the client and the server need to be in sync with what moves they calculate to help facilitate building up the character movement, and everything else is just what you want to focus on
+
 			
 				
 
+/*
+	// AirStrafeSpeedGainMultiplier just determines how much velocity is added during strafing
+	// AirStrafeRotationRate Calculations (How much speed you're able to attain before drag starts to be added during normal (90-180) strafing rotations)
+	// The default values for decent bhop movement is 0.064 gain and 3.4 strafe
+	// decreasing the strafe at higher speeds should help with preventing misuse, right now between 2000-3000 you'll get drag if you don't slow down your turns
+	// Adding more strafe and less gain at beginning speeds should make it easier
+	// Speed and acceleration affect these values. For strafing the acceleration is set to 6400
+	
+
+	- Frame combinations for things like slide boosting out of ledge jumps, and other scenarios, and check that this is safe with different frame rates
+	- Extra strafing if they press the jump input? Or figure out a good way of handling strafing during different states
+	
 
 */
-
 
 
 
@@ -168,61 +182,6 @@ public:
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Bhop																																//
 //----------------------------------------------------------------------------------------------------------------------------------//
-	// AirStrafeSpeedGainMultiplier just determines how much velocity is added during strafing
-	// AirStrafeRotationRate Calculations (How much speed you're able to attain before drag starts to be added during normal (90-180) strafing rotations)
-	// The default values for decent bhop movement is 0.064 gain and 3.4 strafe
-	// decreasing the strafe at higher speeds should help with preventing misuse, right now between 2000-3000 you'll get drag if you don't slow down your turns
-	// Adding more strafe and less gain at beginning speeds should make it easier
-	// Speed and acceleration affect these values. For strafing the acceleration is set to 6400
-	
-	
-/*
-
-	- Movement
-	- Bhopping
-	- Wall Jumping
-	- Wall Running
-	- Wall Climbing
-	- Mantling
-	- Sliding
-	- Ledge Climbing
-	- Ledge Jumping
-
-
-	- Frame combinations for things like slide boosting out of ledge jumps, and other scenarios, and check that this is safe with different frame rates
-
-
-	- Things that don't need specific inputs to be achieved
-
-		- Wall Jumping
-		- Wall Running
-		- Wall Climbing
-		- Mantling
-		- Sliding
-		- Ledge Climbing
-
-	- Wall jumps need AirStrafeSwayPhysics, and add StrafeLurching during ledge jumps
-	- Why don't we allow extra strafing if they press the jump input? Or figure out a good way of handling strafing during different states
-	
-
-
-	// FLAG_Reserved_1 = 0x04, // Reserved for future use (be a rebel and use these anyways)
-	// FLAG_Reserved_2 = 0x08, // Reserved for future use (be a rebel and use these anyways)
-	// FLAG_Custom_3 = 0x80, // WallJumping
-	// FLAG_Custom_2 = 0x40, // Aiming
-	// FLAG_Custom_1 = 0x20, // Mantling
-	// FLAG_Custom_0 = 0x10, // Sprinting
-
-
-
-
-
-
-
-
-*/
-	
-	
 protected:
 	/** Uses bunny hopping and air strafing physics */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)")
@@ -240,6 +199,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "5", EditCondition = "bUseBhopping", EditConditionHides))
 	float AirStrafeRotationRate;
 
+	
 	/** The raw strafe sway duration of inhibited movement after performing a wall jump */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Sway", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "1", EditCondition = "bUseBhopping", EditConditionHides))
 	float StrafeSwayDuration;
@@ -252,6 +212,24 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Sway", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "5.5", EditCondition = "bUseBhopping", EditConditionHides))
 	float StrafeSwayRotationRate;
 
+	
+	/** The strafe lurch duration of influenced movement after performing a mantle jump */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Lurch", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "1", EditCondition = "bUseBhopping", EditConditionHides))
+	float StrafeLurchDuration;
+	
+	/** The duration of the strafe lurch where the player has influence of their movement without the strength decaying */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Lurch", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "1", EditCondition = "bUseBhopping", EditConditionHides))
+	float StrafeLurchFullStrengthDuration;
+
+	/** The strength of the strafe lurch (0-1). This affects the overall influence of strafe lurching, once the duration calculation is done */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Lurch", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "1", EditCondition = "bUseBhopping", EditConditionHides))
+	float StrafeLurchStrength;
+
+	/** The friction of strafe lurching */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe|Air Strafe Lurch", meta=(ClampMin="0.0", UIMin = "0.0", UIMax = "5", EditCondition = "bUseBhopping", EditConditionHides))
+	float StrafeLurchFriction;
+
+	
 	/** air strafing */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement (General Settings)|Air Strafe|Debug", meta=(EditCondition = "bUseBhopping", EditConditionHides))
 	bool bDebugAirStrafe;
@@ -264,6 +242,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement (General Settings)|Air Strafe|Debug", meta=(EditCondition = "bUseBhopping", EditConditionHides))
 	bool bDebugStrafeSway;
 
+	/** strafe lurch physics */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Character Movement (General Settings)|Air Strafe|Debug", meta=(EditCondition = "bUseBhopping", EditConditionHides))
+	bool bDebugStrafeLurch;
+
 	
 protected:
 	/** Whether Air Strafe Sway physics are enabled. If this is true, the player doesn't slow down if they press inputs in the opposite direction of the player's current movement. */
@@ -271,6 +253,12 @@ protected:
 	
 	/** The time strafe sway was previously activated during different physics logic. */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe") float StrafeSwayStartTime;
+
+	/** Whether Air Strafe Lurch physics are enabled. If this is true, the player has directional influence of their movement, with added friction while turning */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe") bool AirStrafeLurchPhysics;
+	
+	/** The time strafe lurch was previously activated during different physics logic. */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Air Strafe") float StrafeLurchStartTime;
 
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
@@ -324,6 +312,9 @@ protected:
 	
 protected:
 	/** Used to determine whether they're trying to perform multiple wall jumps before landing on the ground  */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump") FVector PrevWallJumpLocation;
+	
+	/** Used to determine whether they're trying to perform multiple wall jumps before landing on the ground  */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump") FVector PrevWallJumpNormal;
 
 	/** The location of the player the last time they were on the ground */
@@ -331,7 +322,10 @@ protected:
 
 	/** The current amount of wall jumps the player has done while in air */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Jump") int32 CurrentWallJumpCount;
-	
+
+	/** The time the player previously wall jumped */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jumping") float PrevWallJumpTime;
+
 
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Mantle Jumping																													//
@@ -342,13 +336,21 @@ protected:
 	bool bUseMantleJumping;
 	
 	/** The duration after a ledge climb that is valid for mantle jumping */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(UIMin = "0", UIMax = "1", EditCondition = "bUseMantleJumping", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(UIMin = "0", UIMax = "0.2", EditCondition = "bUseMantleJumping", EditConditionHides))
 	float MantleJumpDuration;
 	
 	/** An additional velocity multiplier to adjust the mantle jump's velocity */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(EditCondition = "bUseMantleJumping", EditConditionHides))
 	FVector2D MantleJumpBoost;
 
+	/** The duration after a ledge climb that is valid for mantle jumping */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(UIMin = "0", UIMax = "0.164", EditCondition = "bUseMantleJumping", EditConditionHides))
+	float SuperGlideDuration;
+
+	/** The velocity multiplier to adjust the super glide's velocity */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump", meta=(EditCondition = "bUseMantleJumping", EditConditionHides))
+	FVector2D SuperGlideBoost;
+	
 	/** Mantle Jump information */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantle Jump|Debug", meta=(EditCondition = "bUseMantleJumping", EditConditionHides))
 	bool bDebugMantleJump;
@@ -398,6 +400,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "0", UIMax = "5", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbFriction;
 
+	/** When should we add gravity to wall climbing? The default is 0, and this value represents the player's Z velocity) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseWallClimbing", EditConditionHides))
+	float WallClimbGravityLimit;
+
 	/** If the player was previously falling, what speed do we start adding velocity from? */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "-100", UIMax = "0", ClampMax = "0", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbAddSpeedThreshold;
@@ -436,6 +442,14 @@ protected:
 	/** The curve that adjusts the speed to allow for smooth interpolations and adjustments. To make things less complicated these are a value between 0-10 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(EditCondition = "bUseMantling", EditConditionHides)) 
 	UCurveFloat* MantleSpeedAdjustments;
+	
+	/** The speed at which the player transitions to the mantle location */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "0", UIMax = "10", EditCondition = "bUseMantling", EditConditionHides)) 
+	float MantleRotationSpeed;
+
+	/** The curve that adjusts the speed to allow for smooth interpolations and adjustments. To make things less complicated these are a value between 0-10 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(EditCondition = "bUseMantling", EditConditionHides)) 
+	UCurveFloat* MantleRotationSpeedAdjustments;
 	
 	/** The offset for when the player is mantling on a ledge */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling", meta=(UIMin = "-100", UIMax = "50", EditCondition = "bUseMantling", EditConditionHides)) 
@@ -487,7 +501,7 @@ protected:
 
 	/** The mantle ledge location */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling") FVector MantleLedgeLocation;
-
+	
 
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Ledge Climbing																													//
@@ -624,7 +638,7 @@ protected:
 	
 	/** The initial boost once you enter the slide movement mode */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding", meta=(UIMin = "0.0", UIMax = "1000", EditCondition = "bUseSliding", EditConditionHides))
-	float SlideEnterImpulse;
+	float SlideEnterBoost;
 
 	/** How much the character's able to rotate while sliding */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding", meta=(UIMin = "0", UIMax = "1", EditCondition = "bUseSliding", EditConditionHides))
@@ -644,12 +658,28 @@ protected:
 	
 	/** The multiplier added to the slide jump for forward movement */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding", meta=(UIMin = "0", UIMax = "640", EditCondition = "bUseSliding", EditConditionHides))
-	float SlideJumpSpeed;
+	float SlideJumpBoost;
+	
+	/** The delay between multiple slides */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding", meta=(UIMin = "0.0", UIMax = "2", EditCondition = "bUseSliding", EditConditionHides))
+	float SlideDelay;
+	
+	/** The duration the player needs to be walking before they're allowed to slide. (This is to prevent bunny hopping speed boosts) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding", meta=(UIMin = "0.0", UIMax = "2", EditCondition = "bUseSliding", EditConditionHides))
+	float WalkingDurationToSlide;
 	
 	/** sliding information */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Sliding|Debug", meta=(EditCondition = "bUseSliding", EditConditionHides))
 	bool bDebugSlide;
+
 	
+protected:
+	/** The time the player started sliding */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding") float SlideStartTime;
+	
+	/** The previous time the player was sliding */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding") float PrevSlideTime;
+
 	
 //----------------------------------------------------------------------------------------------------------------------------------//
 // Other																															//
@@ -657,6 +687,9 @@ protected:
 protected:
 	/** The physics channel for tracing against objects in the world */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)") TEnumAsByte<ETraceTypeQuery> MovementChannel;
+	
+	/** land movement and information */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugWallJump;
 	
 	/** land movement and information */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement: Debugging") bool bDebugGroundMovement;
@@ -669,7 +702,12 @@ protected:
 	
 	/** The physics channel for tracing against objects in the world */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)") float TraceDuration;
-	
+
+
+protected:
+	/** The time the player started walking */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding") float WalkingStartTime;
+
 
 //-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------//
 // Bhop Character Movement Component																																 						 //
@@ -719,17 +757,14 @@ public:
 	/** If the player is strafe swaying */
 	UFUNCTION(BlueprintCallable) virtual bool IsStrafeSwaying();
 
+	/** If the player is strafe lurching */
+	UFUNCTION(BlueprintCallable) virtual bool IsStrafeLurching();
+	
 	
 //------------------------------------------------------------------------------//
 // Update Movement Mode Logic													//
 //------------------------------------------------------------------------------//
 protected:
-	/**
-	 * Updates the character state in PerformMovement right before doing the actual position change
-	 * This handles updating the movement mode updates from player inputs
-	 */
-	virtual void UpdateCharacterStateBeforeMovement(float DeltaSeconds) override;
-
 	/**
 	 * Called after MovementMode has changed. Base implementation does special handling for starting certain modes, then notifies the CharacterOwner.
 	 * This updates the character's state information, and handles the enter and exit logic for different movement modes
@@ -741,6 +776,15 @@ protected:
 	 * This handles updating this component's movement values for a specific movement mode once it's been updated
 	 */
 	virtual void OnMovementUpdated(float DeltaSeconds, const FVector& OldLocation, const FVector& OldVelocity) override;
+	
+	/**
+	 * Updates the character state in PerformMovement right before doing the actual position change
+	 * This handles updating the movement mode updates from player inputs
+	 */
+	virtual void UpdateCharacterStateBeforeMovement(float DeltaSeconds) override;
+
+	/** Update the character state in PerformMovement after the position change. Some rotation updates happen after this. */
+	virtual void UpdateCharacterStateAfterMovement(float DeltaSeconds) override;
 
 	
 //------------------------------------------------------------------------------//
@@ -881,6 +925,9 @@ public:
 	/** Returns true if current movement state and wall is valid for climbing, and if the player trying to climb the wall */
 	UFUNCTION(BlueprintCallable) virtual bool CanWallClimb() const;
 
+	/** Returns true if the player is facing the wall in first/third person orientations and trying to climb the wall */
+	UFUNCTION(BlueprintCallable) virtual bool TryingToClimbWall(FVector WallNormal) const;
+
 	
 protected:
 	/** Enter wall climb logic */
@@ -979,8 +1026,7 @@ public:
 	{
 	public:
 		typedef FCharacterNetworkMoveData Super;
-		FVector MoveData_Time;
-		FVector_NetQuantize10 MoveData_Input;
+		FVector MoveData_InputAndTime;
 		
 		virtual void ClientFillNetworkMoveData(const FSavedMove_Character& ClientMove, ENetworkMoveType MoveType) override;
 		virtual bool Serialize(UCharacterMovementComponent& CharacterMovement, FArchive& Ar, UPackageMap* PackageMap, ENetworkMoveType MoveType) override;
@@ -1029,7 +1075,7 @@ public:
 			
 			// Custom saved move information and Other values values we want to pass across the network
 			float Time;
-			FVector PlayerInput;
+			FVector2D PlayerInput;
 		
 			// Without customizing the movement component these are the remaining flags for creating new functionality
 			uint8 SavedRequestToStartWallJumping : 1;
@@ -1066,7 +1112,7 @@ public:
 	FMCharacterNetworkMoveDataContainer CustomMoveDataContainer;
 
 	// Custom movement information
-	UPROPERTY(BlueprintReadWrite) FVector PlayerInput; // VelocityOriented input values (Acceleration)
+	UPROPERTY(BlueprintReadWrite) FVector2D PlayerInput; // VelocityOriented input values (Acceleration)
 	UPROPERTY(BlueprintReadWrite) uint8 WallJumpPressed : 1;
 	UPROPERTY(BlueprintReadWrite) uint8 AimPressed : 1;
 	UPROPERTY(BlueprintReadWrite) uint8 Mantling : 1;
@@ -1089,7 +1135,7 @@ public:
 	UFUNCTION(BlueprintCallable) void StartAiming();
 	UFUNCTION(BlueprintCallable) void StopAiming();
 
-	UFUNCTION(BlueprintCallable) void UpdatePlayerInput(const FVector& InputVector);
+	UFUNCTION(BlueprintCallable) void UpdatePlayerInput(const FVector2D& InputVector);
 	
 	UFUNCTION(BlueprintCallable) void StartWallJump();
 	UFUNCTION(BlueprintCallable) void StopWallJump();
@@ -1097,6 +1143,9 @@ public:
 	UFUNCTION(BlueprintCallable) void DisableStrafeSwayPhysics();
 	UFUNCTION(BlueprintCallable) void EnableStrafeSwayPhysics();
 
+	UFUNCTION(BlueprintCallable) void DisableStrafeLurchPhysics();
+	UFUNCTION(BlueprintCallable) void EnableStrafeLurchPhysics();
+	
 	
 //------------------------------------------------------------------------------//
 // Jump Logic																	//
@@ -1152,7 +1201,7 @@ public:
 	virtual void UpdateExternalMovementModeInformation(EMovementMode& MovementModeRef, uint8& CustomMovementModeRef);
 	
 	/** Returns the player's current input */
-	UFUNCTION(BlueprintCallable) virtual FVector GetPlayerInput() const;
+	UFUNCTION(BlueprintCallable) virtual FVector2D GetPlayerInput() const;
 
 	/** Returns the movement mode */
 	UFUNCTION(BlueprintCallable) virtual EMovementMode GetMovementMode() const;
@@ -1168,6 +1217,15 @@ public:
 	
 	/** Returns the ledge climb normal */
 	UFUNCTION(BlueprintCallable) virtual FVector GetLedgeClimbNormal() const;
+
+	/** Returns the wall jump location */
+	UFUNCTION(BlueprintCallable) virtual FVector GetWallJumpLocation() const;
+	
+	/** Returns the wall jump normal */
+	UFUNCTION(BlueprintCallable) virtual FVector GetWallJumpNormal() const;
+	
+	/** Returns the previous wall jump time */
+	UFUNCTION(BlueprintCallable) virtual float GetPreviousWallJumpTime() const;
 
 	
 //------------------------------------------------------------------------------//
@@ -1190,13 +1248,16 @@ public:
 	// UBaseAbilitySystem* GetAbilitySystem() const;
 
 	/** Logic to do once the in air state has been updated */
-	virtual void HandleInAirLogic();
+	virtual void ResetFallingStateInformation(EMovementMode PrevMode, uint8 PrevCustomMode);
+	
+	/** Logic to do once the moving on ground state has been updated */
+	virtual void ResetGroundStateInformation(EMovementMode PrevMode, uint8 PrevCustomMode);
 	
 	/** Util function for printing debug messages */
 	virtual void DebugGroundMovement(FString Message, FColor Color, bool DrawSphere = false);
 
 	/** Prints the input direction as a string for help with sensemaking of gaining momentum during strafing */
-	FString GetMovementDirection(const FVector& InputVector) const;
+	FString GetMovementDirection(const FVector2D& InputVector) const;
 
 	
 };

@@ -1,4 +1,4 @@
-
+// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "AdvancedMovementComponent.h"
@@ -8,6 +8,8 @@
 #include "Kismet/KismetSystemLibrary.h"
 #include "Logging/StructuredLog.h"
 
+
+DEFINE_LOG_CATEGORY(Movement);
 
 namespace CharacterMovementConstants // @ref 5.4
 {
@@ -40,15 +42,23 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	StrafeSwaySpeedGainMultiplier = 1;
 	StrafeSwayRotationRate = 3;
 
+	// Strafe Lurching
+	StrafeLurchDuration = 0.45;
+	StrafeLurchFullStrengthDuration = 0.1;
+	StrafeLurchStrength = 1;
+	StrafeLurchFriction = 2;
+	
 	// Sliding
 	bUseSliding = true;
 	SlideEnterThreshold = 600;
-	SlideEnterImpulse = 450;
+	SlideEnterBoost = 450;
 	SlidingRotationRate = 1;
-	SlidingFriction = 1;
+	SlidingFriction = 0.64;
 	SlideAngleFrictionMultiplier = 3.4;
 	SlideBrakingFriction = 2;
-	SlideJumpSpeed = 100;
+	SlideJumpBoost = 100;
+	SlideDelay = 1.5;
+	WalkingDurationToSlide = 0.2;
 
 	// Wall Jumping
 	bUseWallJumping = true;
@@ -64,7 +74,9 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	// Mantle Jumping
 	bUseMantleJumping = true;
 	MantleJumpDuration = 0.2;
-	MantleJumpBoost = FVector2D(690, 330);
+	MantleJumpBoost = FVector2D(450, 450);
+	SuperGlideDuration = 0.05;
+	SuperGlideBoost = FVector2D(450, 100);
 	
 	// Wall Climbing
 	bUseWallClimbing = true;
@@ -75,15 +87,17 @@ UAdvancedMovementComponent::UAdvancedMovementComponent()
 	WallClimbMultiplier = FVector2D(0.64, 1);
 	WallClimbAcceptableAngle = 45;
 	WallClimbFriction = 2.5;
+	WallClimbGravityLimit = -45;
 	WallClimbAddSpeedThreshold = -10;
 
 	// Mantling
 	bUseMantling = true;
 	MantleSpeed = 200.0;
+	MantleRotationSpeed = 1;
 	MantleLedgeLocationOffset = -55;
 	MantleSurfaceTraceFromLedgeOffset = 10;
-	MantleTraceDistance = 45;
-	MantleSecondTraceDistance = 90;
+	MantleTraceDistance = 64;
+	MantleSecondTraceDistance = 100;
 	MantleTraceHeightOffset = 10;
 	ClimbLocationSpaceOffset = 2.0;
 	MantleLocationSpaceOffset = 2.0;
@@ -212,26 +226,6 @@ void UAdvancedMovementComponent::InitializeComponent()
 //------------------------------------------------------------------------------//
 // General Movement Logic														//
 //------------------------------------------------------------------------------//
-float UAdvancedMovementComponent::GetMaxSpeed() const
-{
-	// Player input based movement logic
-	if (IsMovingOnGround())
-	{
-		if (SprintPressed) return MaxWalkSpeed * SprintSpeedMultiplier;
-		if (AimPressed) return MaxWalkSpeed * AimSpeedMultiplier;
-		// if (Character->bWalking) return MaxWalkSpeed * WalkSpeedMultiplier;
-		if (IsSliding()) return SlideSpeedLimit; // TODO: Investigate crouching logic and it's behavior during air movement, and perhaps refactor this into the normal walking movement logic with physics adjustments similar to air strafe lurches
-		if (IsWallRunning()) return WallRunSpeed;
-		if (IsCrouching())
-		{
-			if (SprintPressed) return MaxWalkSpeedCrouched * CrouchSprintSpeedMultiplier;
-			else return MaxWalkSpeedCrouched;
-		}
-	}
-	
-	return Super::GetMaxSpeed();
-}
-
 
 #pragma region Conditional Checks
 bool UAdvancedMovementComponent::IsCustomMovementMode(ECustomMovementMode InCustomMovementMode) const { return MovementMode == MOVE_Custom && CustomMovementMode == InCustomMovementMode; }
@@ -244,6 +238,7 @@ bool UAdvancedMovementComponent::IsMantling() const { return MovementMode == MOV
 bool UAdvancedMovementComponent::IsLedgeClimbing() const { return MovementMode == MOVE_Custom && CustomMovementMode == MOVE_Custom_LedgeClimbing; }
 bool UAdvancedMovementComponent::IsAiming() const { return AimPressed; }
 bool UAdvancedMovementComponent::IsStrafeSwaying() { return AirStrafeSwayPhysics; }
+bool UAdvancedMovementComponent::IsStrafeLurching() { return AirStrafeLurchPhysics; }
 #pragma endregion 
 
 
@@ -252,48 +247,12 @@ bool UAdvancedMovementComponent::IsStrafeSwaying() { return AirStrafeSwayPhysics
 // Update Movement Mode Logic													//
 //------------------------------------------------------------------------------//
 #pragma region Update Movement Mode
-void UAdvancedMovementComponent::UpdateCharacterStateBeforeMovement(const float DeltaSeconds)
-{
-	Super::UpdateCharacterStateBeforeMovement(DeltaSeconds);
-	if (CharacterOwner->IsLocallyControlled() && GetWorld())
-	{
-		Time = GetWorld()->GetTimeSeconds(); // TODO: after a duration, have the server (uses the client's) and client time be in sync with each other and prevent cheating on the client side
-	}
-
-	// TODO: Fix this, I don't want to add extra input actions though. They do not update values if you don't enter a value, but this is already handled when they convert input into acceleration before sending it to the server
-	if (Acceleration.Equals(FVector::ZeroVector, 0.01)) PlayerInput = FVector::ZeroVector;
-
-	// Handle Strafe sway duration
-	if (IsStrafeSwaying() && StrafeSwayStartTime + StrafeSwayDuration <= Time)
-	{
-		DisableStrafeSwayPhysics();
-	}
-	
-	// Slide
-	if (IsCrouching() && !IsSliding() && CanSlide())
-	{
-		SetMovementMode(MOVE_Custom, MOVE_Custom_Slide);
-	}
-
-	if (bDebugNetworkReplication)
-	{
-		UE_LOGFMT(LogTemp, Log, "{0}::{1} -> WallJump {2}, AirStrafe: {3}, Sprinting: {4}, Mantling: {5}",
-			CharacterOwner->HasAuthority() ? "Server" : "Client", *GetNameSafe(CharacterOwner),
-			WallJumpPressed ? "true" : "false",
-			AirStrafeSwayPhysics ? "true" : "false",
-			SprintPressed ? "true" : "false",
-			Mantling ? "true" : "false"
-		);
-	}
-}
-
-
 void UAdvancedMovementComponent::OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode)
 {
 	Super::OnMovementModeChanged(PreviousMovementMode, PreviousCustomMode);
 	if (bDebugMovementMode)
 	{
-		UE_LOGFMT(LogTemp, Warning, "{0}: Movement Mode Updated: {1}, previous movement mode: {2}",
+		UE_LOGFMT(Movement, Warning, "{0}: Movement Mode Updated: {1}, previous movement mode: {2}",
 			*GetNameSafe(CharacterOwner),
 			*UEnum::GetValueAsString(MovementMode), 
 			*UEnum::GetValueAsString(PreviousMovementMode)
@@ -318,7 +277,8 @@ void UAdvancedMovementComponent::OnMovementModeChanged(EMovementMode PreviousMov
 	ResetWallJumpInformation(PreviousMovementMode, PreviousCustomMode);
 	ResetWallClimbInformation(PreviousMovementMode, PreviousCustomMode);
 	ResetWallRunInformation(PreviousMovementMode, PreviousCustomMode);
-	HandleInAirLogic();
+	ResetFallingStateInformation(PreviousMovementMode, PreviousCustomMode);
+	ResetGroundStateInformation(PreviousMovementMode, PreviousCustomMode);
 
 	// Update player state
 	// if (CharacterOwner && CharacterOwner->GetLocalRole() == ROLE_Authority)
@@ -332,6 +292,52 @@ void UAdvancedMovementComponent::OnMovementUpdated(float DeltaSeconds, const FVe
 {
 	Super::OnMovementUpdated(DeltaSeconds, OldLocation, OldVelocity);
 }
+
+
+void UAdvancedMovementComponent::UpdateCharacterStateBeforeMovement(const float DeltaSeconds)
+{
+	Super::UpdateCharacterStateBeforeMovement(DeltaSeconds);
+	if (CharacterOwner->IsLocallyControlled() && GetWorld())
+	{
+		Time = GetWorld()->GetTimeSeconds(); // TODO: after a duration, have the server (uses the client's) and client time be in sync with each other and prevent cheating on the client side
+	}
+
+	// Handle Strafe sway duration
+	if (IsStrafeSwaying() && StrafeSwayStartTime + StrafeSwayDuration <= Time)
+	{
+		DisableStrafeSwayPhysics();
+	}
+
+	// Handle Strafe lurch duration
+	if (IsStrafeLurching() && StrafeLurchStartTime + StrafeLurchDuration <= Time)
+	{
+		DisableStrafeLurchPhysics();
+	}
+	
+	// Slide
+	if (!IsSliding() && CanSlide() && Velocity.Size2D() > SlideEnterThreshold && WalkingStartTime + WalkingDurationToSlide <= Time)
+	{
+		SetMovementMode(MOVE_Custom, MOVE_Custom_Slide);
+	}
+
+	if (bDebugNetworkReplication)
+	{
+		UE_LOGFMT(Movement, Log, "{0}::{1} -> Time: ({2}), PlayerInput: ({3}) Sprinting: ({4}), WallJumping: ({5})",
+			CharacterOwner->HasAuthority() ? "Server" : "Client",
+			*GetNameSafe(CharacterOwner),
+			*FString::SanitizeFloat(Time),
+			*PlayerInput.ToString(),
+			SprintPressed ? "true" : "false",
+			WallJumpPressed ? "true" : "false"
+		);
+	}
+}
+
+
+void UAdvancedMovementComponent::UpdateCharacterStateAfterMovement(float DeltaSeconds)
+{
+	Super::UpdateCharacterStateAfterMovement(DeltaSeconds);
+}
 #pragma endregion 
 
 
@@ -340,6 +346,259 @@ void UAdvancedMovementComponent::OnMovementUpdated(float DeltaSeconds, const FVe
 //------------------------------------------------------------------------------//
 // Physics Functions															//
 //------------------------------------------------------------------------------//
+void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration)
+{
+	const float BaseSpeed = Velocity.Size2D();
+	FRotator MovementRotation(0, UpdatedComponent->GetComponentRotation().Yaw, 0);
+	FVector OldVelocity = Velocity;
+
+	FVector AccelDir = Acceleration.GetSafeNormal();
+	// FVector AccelDir;
+	
+	//--------------------------------------------------------------------------------------------------------------//
+	// Sliding																										//
+	//--------------------------------------------------------------------------------------------------------------//
+	if (IsSliding())
+	{
+		// Only Allow side strafing and prevent velocity being added during a strafe
+		Acceleration = FVector(UKismetMathLibrary::GetRightVector(MovementRotation) * PlayerInput.Y).GetSafeNormal() * Acceleration.Size2D();
+		
+		// Find strafe
+		AccelDir = (UKismetMathLibrary::GetRightVector(MovementRotation) * PlayerInput.Y).GetSafeNormal(); // Allow sideways movements, however don't add to the velocity
+		const float ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
+		const float AirSpeedCap = (GetMaxAcceleration() / 100) * StrafeSwaySpeedGainMultiplier; // Strafe sway should have more control without slowing down the character's momentum
+
+		// Friction affects our ability to change direction. This is only done for input acceleration, not path following.
+		const FVector AccelerationDir = Acceleration.GetSafeNormal();
+		const float VelSize = Velocity.Size();
+		Velocity = Velocity - (Velocity - AccelerationDir * VelSize) * FMath::Min(DeltaTime * Friction, 1.f);
+
+		const float AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
+		if (AddSpeed > 0.0f)
+		{
+			FVector RedirectedVelocity = Acceleration * SlidingRotationRate * DeltaTime;
+			RedirectedVelocity = RedirectedVelocity.GetClampedToMaxSize2D(AddSpeed);
+
+			Velocity += RedirectedVelocity;
+		}
+
+		// If strafing added extra speed while turning, add friction to slow us down
+		if (Velocity.Size2D() > OldVelocity.Size2D())
+		{
+			Velocity = Velocity.GetSafeNormal2D() * OldVelocity.Size2D();
+			ApplyVelocityBraking(DeltaTime, SlideBrakingFriction, BrakingDeceleration);
+		}
+
+		
+		if (bDebugSlide)
+		{
+			float FloorAngle = CurrentFloor.HitResult.ImpactNormal.Dot(UpdatedComponent->GetForwardVector()) * SlideAngleFrictionMultiplier;
+			float FrictionCalc = FMath::Clamp(SlidingFriction - FloorAngle, 0, SlidingFriction * 3);
+			
+			UE_LOGFMT(Movement, Log, "{0}::Sliding ({1}) ->  ({2})({3}) Accel/Vel: ({4})({5}), Input: ({6}), Friction/FloorAngle: ({7})({8})",
+				CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"), *FString::SanitizeFloat(Time),
+				*GetMovementDirection(PlayerInput),
+				FMath::CeilToInt(Velocity.Size2D()),
+				*FVector2D(Acceleration.X, Acceleration.Y).ToString(),
+				*FVector2D(Velocity.X, Velocity.Y).ToString(),
+				*PlayerInput.ToString(),
+				FMath::CeilToInt(FrictionCalc),
+				FMath::CeilToInt(FloorAngle)
+			);
+		}
+		
+		return;
+	}
+	
+	
+	//--------------------------------------------------------------------------------------------------------------//
+	// All movement modes except for air																			//
+	//--------------------------------------------------------------------------------------------------------------//
+	if (MovementMode != MOVE_Falling) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
+	
+	
+	//--------------------------------------------------------------------------------------------------------------------------------------//
+	// Third person (with orient rotation to movement) physics																				//
+	//--------------------------------------------------------------------------------------------------------------------------------------//
+	// Strafing calculations causes problems if the character's movement isn't oriented to their movement
+	if (!bUseBhopping || bOrientRotationToMovement) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
+	// If the player's rotation is oriented to the camera, it messes up the fp strafing calculations, and this prevents that from happening
+	
+	
+	//--------------------------------------------------------------------------------------------------------------------------------------//
+	// Air Movement Logic																													//
+	//--------------------------------------------------------------------------------------------------------------------------------------//
+	// Do not update velocity when using root motion or when SimulatedProxy and not simulating root motion - SimulatedProxy are repped their Velocity
+	if (!HasValidData() || HasAnimRootMotion() || DeltaTime < MIN_TICK_TIME || (CharacterOwner && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy && !bWasSimulatingRootMotion))
+	{
+		return;
+	}
+	
+	// Air strafe values
+	float ProjVelocity;
+	FVector AddedVelocity;
+	float AirSpeedCap; // How much speed is gained during air strafing?
+	float AirAccelerationMultiplier; // Drag is added to the equation if the accelerationMultiplier / 10 isn't the same as the player's velocity 
+	float AddSpeed;
+
+	
+	//------------------------------------------------------------------------------------------------------------------//
+	// AirStrafe Sway ->  Prevent Air resistance during specific movement actions (Wall jumps, ledge jumps, etc.)		//
+	//------------------------------------------------------------------------------------------------------------------//
+	if (IsStrafeSwaying())
+	{
+		// Find strafe
+		ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
+		AirSpeedCap = (GetMaxAcceleration() / 100) * StrafeSwaySpeedGainMultiplier; // Strafe sway should have more control without slowing down the character's momentum
+		AirAccelerationMultiplier = StrafeSwayRotationRate;
+		
+		// Update the acceleration based on the character's air control
+		Acceleration = GetFallingLateralAcceleration(DeltaTime);
+
+		// Allow Strafing, don't let the player stop the momentum from pressing an input in the opposite direction of the momentum
+		AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
+		if (AddSpeed > 0.0f)
+		{
+			AddedVelocity = Acceleration * AirAccelerationMultiplier * AirControl * DeltaTime;
+			AddedVelocity = AddedVelocity.GetClampedToMaxSize2D(AddSpeed);
+
+			// Don't allow the player to move against the strafe
+			const float AngleFromCurrentVelocity = Velocity.GetSafeNormal2D().Dot(AccelDir); 
+			if (AngleFromCurrentVelocity > -0.34) Velocity += AddedVelocity;
+		}
+	}
+
+	//------------------------------------------------------------------------------------------------------------------//
+	// AirStrafe Lurch ->  Air influence during specific movement actions (Mantle jumps, ledge jumps, etc.)				//
+	//------------------------------------------------------------------------------------------------------------------//
+	else if (IsStrafeLurching())
+	{
+		FVector AirStrafeVelocity = OldVelocity;
+		FVector AirStrafeLurchVelocity = OldVelocity;
+		
+		// Update the acceleration based on the character's air control
+		Acceleration = GetFallingLateralAcceleration(DeltaTime);
+		
+		/**** Air Strafe calculations ****/
+		ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
+		AirSpeedCap = (GetMaxAcceleration() / 100) * AirStrafeSpeedGainMultiplier; // How much speed is gained during air strafing?
+		AirAccelerationMultiplier = AirStrafeRotationRate; // Drag is added to the equation if the accelerationMultiplier / 10 isn't the same as the player's velocity 
+		
+		// Update the acceleration based on the character's air control
+		Acceleration = GetFallingLateralAcceleration(DeltaTime);
+		
+		// Add strafing momentum to the character's velocity 
+		AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
+		if (AddSpeed > 0.0f)
+		{
+			AddedVelocity = Acceleration * AirAccelerationMultiplier * AirControl * DeltaTime;
+			AddedVelocity = AddedVelocity.GetClampedToMaxSize2D(AddSpeed);
+			AirStrafeVelocity += AddedVelocity;
+		}
+
+		
+		/**** Strafe Lurch influence ****/
+		if (AccelDir.IsNearlyZero()) AirStrafeLurchVelocity = Velocity;
+		else AirStrafeLurchVelocity = AccelDir * BaseSpeed;
+		
+		// Apply friction
+		FVector FrictionVector = OldVelocity - AirStrafeLurchVelocity;
+		FVector Friction = FrictionVector * (StrafeLurchFriction * 10) * DeltaTime;
+		AirStrafeLurchVelocity += Friction;
+		
+		// Apply input acceleration
+		// if (!Acceleration.IsNearlyZero())
+		// {
+		// 	const float MaxInputSpeed = FMath::Max(GetMaxSpeed() * AnalogInputModifier, GetMinAnalogSpeed());
+		// 	const float NewMaxInputSpeed = IsExceedingMaxSpeed(MaxInputSpeed) ? Velocity.Size() : MaxInputSpeed;
+		// 	AirStrafeLurchVelocity += Acceleration * DeltaTime;
+		// 	AirStrafeLurchVelocity = Velocity.GetClampedToMaxSize(NewMaxInputSpeed);
+		// }
+		
+
+		/**** Velocity calculations ****/
+		float LurchStrength;
+		float Duration = StrafeLurchStartTime + StrafeLurchDuration - Time;
+		if (StrafeLurchStartTime + StrafeLurchFullStrengthDuration > Time) LurchStrength = 1;
+		else LurchStrength = UKismetMathLibrary::MapRangeClamped(Duration, 0, StrafeLurchDuration - StrafeLurchFullStrengthDuration, 0, 1);
+		LurchStrength = FMath::Clamp(LurchStrength * StrafeLurchStrength, 0, 1);
+
+		FVector AirStrafeInfluence = AirStrafeVelocity * (1 - LurchStrength);
+		FVector AirStrafeLurchInfluence = AirStrafeLurchVelocity * LurchStrength;
+		Velocity = AirStrafeInfluence + AirStrafeLurchInfluence;
+
+		if (bDebugStrafeLurch)
+		{
+			float PrevSpeed = OldVelocity.Size2D();
+			float Speed = Velocity.Size2D();
+			// Velocity/AccelDir // Speed (+/- Adjusted) // Proj/Added Velocity / AccelMultiplier
+			UE_LOGFMT(Movement, Log, "{0}::{1} ({2}) ->  ({3})({4}) Vel/AccelDir: ({5})({6}) Speed: ({7})({8}), AirStrafe/Lurch Vel: ({9})({10}), Proj/Add Vel: ({11})({12})",
+				CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"), *FString("StrafeLurch"),
+				*FString::SanitizeFloat(StrafeLurchStartTime + StrafeLurchDuration - Time),
+				*GetMovementDirection(PlayerInput), Speed - PrevSpeed > 0 ? *FString("+") : *FString("-"),
+				*Velocity.ToString(), *FVector2D(AccelDir.X, AccelDir.Y).ToString(),
+				FMath::CeilToInt(Speed), FMath::CeilToInt(Speed - PrevSpeed),
+				*AirStrafeVelocity.ToString(), *AirStrafeLurchVelocity.ToString(),
+				FMath::CeilToInt(ProjVelocity), *AddedVelocity.ToString()
+			);
+
+			// UE_LOGFMT(Movement, Log, "StrafeLurchTime: {0}, Strength: {1}, AirStrafeInfluence: {2}, StrafeLurchInfluence: {3}",
+			// 	*FString::SanitizeFloat(Duration), *FString::SanitizeFloat(LurchStrength),
+			// 	*AirStrafeInfluence.ToString(), *AirStrafeLurchInfluence.ToString()
+			// );
+		}
+	}
+	
+	//--------------------------------------------------------------------------------------------------------------//
+	// Strafing / Bhopping physics																					//
+	//--------------------------------------------------------------------------------------------------------------//
+	else
+	{
+		// Find strafe
+		ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
+		AirSpeedCap = (GetMaxAcceleration() / 100) * AirStrafeSpeedGainMultiplier; // How much speed is gained during air strafing?
+		AirAccelerationMultiplier = AirStrafeRotationRate; // Drag is added to the equation if the accelerationMultiplier / 10 isn't the same as the player's velocity 
+		
+		// Update the acceleration based on the character's air control
+		Acceleration = GetFallingLateralAcceleration(DeltaTime);
+		
+		// Add strafing momentum to the character's velocity 
+		AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
+		if (AddSpeed > 0.0f)
+		{
+			AddedVelocity = Acceleration * AirAccelerationMultiplier * AirControl * DeltaTime;
+			AddedVelocity = AddedVelocity.GetClampedToMaxSize2D(AddSpeed);
+			Velocity += AddedVelocity;
+		}
+	}
+	
+	// MovementInput, Gain/Lose Speed, AddedVelocity, Velocity, AirSpeedCap, AirAccelMultiplier
+	if (bDebugAirStrafe || bDebugStrafeSway)
+	{
+		if (IsStrafeSwaying() && !bDebugStrafeSway) return;
+		else if (IsStrafeLurching()) return;
+		else if (!bDebugAirStrafe) return;
+
+		float PrevSpeed = OldVelocity.Size2D();
+		float Speed = Velocity.Size2D();
+		// Velocity/AccelDir // Speed (+/- Adjusted) // Proj/Added Velocity / AccelMultiplier
+		UE_LOGFMT(Movement, Log, "{0}::{1} ({2}) ->  ({3})({4}) Vel/AccelDir: ({5})({6}) Speed: ({7})({8}), ProjVel: ({9}), Added Vel: ({10})",
+			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
+			IsStrafeSwaying() ? *FString("StrafeSway") : *FString("AirStrafe"),
+			IsStrafeSwaying() ? *FString::SanitizeFloat(StrafeSwayStartTime + StrafeSwayDuration - Time) : *FString(""),
+			*GetMovementDirection(PlayerInput),
+			Speed - PrevSpeed > 0 ? *FString("+") : *FString("-"),
+			*Velocity.ToString(),
+			*FVector2D(AccelDir.X, AccelDir.Y).ToString(),
+			FMath::CeilToInt(Speed),
+			FMath::CeilToInt(Speed - PrevSpeed),
+			FMath::CeilToInt(ProjVelocity),
+			*AddedVelocity.ToString()
+		);
+	}
+}
+
+
 void UAdvancedMovementComponent::StartNewPhysics(float deltaTime, int32 Iterations)
 {
 	Super::StartNewPhysics(deltaTime, Iterations);
@@ -355,14 +614,15 @@ void UAdvancedMovementComponent::PhysWalking(float deltaTime, int32 Iterations)
 		return;
 	}
 
+	// null character and root motion checks
 	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
 	{
 		Acceleration = FVector::ZeroVector;
 		Velocity = FVector::ZeroVector;
 		return;
 	}
-	
 
+	// null safety check
 	if (!UpdatedComponent->IsQueryCollisionEnabled())
 	{
 		SetMovementMode(MOVE_Walking);
@@ -380,6 +640,23 @@ void UAdvancedMovementComponent::PhysSlide(float deltaTime, int32 Iterations)
 		return;
 	}
 
+	// null character and root motion checks
+	if (!CharacterOwner || (!CharacterOwner->Controller && !bRunPhysicsWithNoController && !HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity() && (CharacterOwner->GetLocalRole() != ROLE_SimulatedProxy)))
+	{
+		Acceleration = FVector::ZeroVector;
+		Velocity = FVector::ZeroVector;
+		return;
+	}
+	
+	// if the player stops crouching or presses away from the slide then stop sliding
+	if (PlayerInput.X < -0.1 || !bWantsToCrouch)
+	{
+		SetMovementMode(MOVE_Walking);
+		StartNewPhysics(deltaTime, Iterations);
+		return;
+	}
+	
+	// check if they're still sliding
 	if (!CanSlide())
 	{
 		SetMovementMode(MOVE_Walking);
@@ -418,7 +695,7 @@ void UAdvancedMovementComponent::PhysFalling(float deltaTime, int32 Iterations)
 		float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
 		remainingTime -= timeTick;
 
-		// UE_LOGFMT(LogTemp, Log, "{0} Physics(Falling): {2}", CharacterOwner->HasAuthority() ? "Server" : "Client", Time);
+		// UE_LOGFMT(Movement, Log, "{0} Physics(Falling): {2}", CharacterOwner->HasAuthority() ? "Server" : "Client", Time);
 		
 		// save the current values
 		const FVector OldLocation = UpdatedComponent->GetComponentLocation();
@@ -489,8 +766,8 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 			return;
 		}
 		
-		// if they move away or let go of the wall wall transition to air
-		if (PlayerInput.X <= 0.0)
+		// if they stop climbing the wall transition to air
+		if (PlayerInput.IsNearlyZero())
 		{
 			SetMovementMode(MOVE_Falling);
 			StartNewPhysics(deltaTime, Iterations);
@@ -501,15 +778,15 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 		FVector WallClimbVector = FVector();
 		if (!HasAnimRootMotion() && !CurrentRootMotion.HasOverrideVelocity())
 		{
-			if (Velocity.Z < 0)
+			if (Velocity.Z < WallClimbGravityLimit)
 			{
 				ApplyVelocityBraking(timeTick, WallClimbFriction, GetMaxBrakingDeceleration());
 				Adjusted = Velocity * timeTick;
 			}
-			if (Velocity.Z > WallClimbAddSpeedThreshold)
+			if (Velocity.Z > WallClimbGravityLimit + WallClimbAddSpeedThreshold)
 			{
 				// if they aren't climbing don't add vertical speed, however add a multiplier for how much speed should be added, and limit it to their input
-				WallClimbVector = FVector(AccelDir.X * WallClimbMultiplier.X, AccelDir.Y * WallClimbMultiplier.X, UKismetMathLibrary::MapRangeClamped(PlayerInput.X, 0, 1, 0, WallClimbMultiplier.Y));
+				WallClimbVector = FVector( AccelDir.X * WallClimbMultiplier.X, AccelDir.Y * WallClimbMultiplier.X, 1 * WallClimbMultiplier.Y);
 				Velocity = FVector(Velocity + WallClimbVector * WallClimbAcceleration).GetClampedToSize(0, WallClimbSpeed);
 				Adjusted = Velocity * timeTick;
 			}
@@ -531,16 +808,19 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 				return;
 			}
 			
-			// if they're trying to transition to mantling
-			if (PlayerInput.X > 0.1 && CheckIfSafeToMantleLedge())
+			// if they're trying to transition to mantling/ledge climbing
+			if (CheckIfSafeToMantleLedge())
 			{
-				SetMovementMode(MOVE_Custom, MOVE_Custom_Mantling);
+				FVector Location = UpdatedComponent->GetComponentLocation();
+				if (Location.Z <= MantleLedgeLocation.Z) SetMovementMode(MOVE_Custom, MOVE_Custom_Mantling);
+				else SetMovementMode(MOVE_Custom, MOVE_Custom_LedgeClimbing);
 				StartNewPhysics(deltaTime, Iterations);
 				return;
 			}
 			
 			// transition out of wall climbing if they aren't trying to climb the wall
-			const float Angle = 180 - UKismetMathLibrary::DegAcos(Hit.Normal.Dot(UpdatedComponent->GetForwardVector()));
+			const FVector ForwardVector = bOrientRotationToMovement ? AccelDir : UpdatedComponent->GetForwardVector();
+			const float Angle = 180 - UKismetMathLibrary::DegAcos(Hit.Normal.Dot(ForwardVector));
 			if (Angle > WallClimbAcceptableAngle)
 			{
 				SetMovementMode(MOVE_Falling);
@@ -555,7 +835,7 @@ void UAdvancedMovementComponent::PhysWallClimbing(float deltaTime, int32 Iterati
 			
 			if (bDebugWallClimb)
 			{
-				UE_LOGFMT(LogTemp, Log, "{0}::WallClimb ({1}) ->  ({2})({3}) Adjusted: ({4}), Vel: ({5}), WallClimbVector: ({6}), PlayerInput: ({7}), Speed: ({8}), Acceleration: ({9}), Multiplier: ({10})",
+				UE_LOGFMT(Movement, Log, "{0}::WallClimb ({1}) ->  ({2})({3}) Adjusted: ({4}), Vel: ({5}), WallClimbVector: ({6}), PlayerInput: ({7}), Speed: ({8}), Acceleration: ({9}), Multiplier: ({10})",
 					CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
 					*FString::SanitizeFloat(WallClimbStartTime + WallClimbDuration - Time),
 					*FString::SanitizeFloat(Angle),
@@ -594,7 +874,8 @@ void UAdvancedMovementComponent::PhysMantling(float deltaTime, int32 Iterations)
 	}
 
 	// if the player presses away from the wall then return to the falling state
-	if (PlayerInput.X < -0.1)
+	const float PlayerAngle = -LedgeClimbNormal.Dot(Acceleration.GetSafeNormal());
+	if (!PlayerInput.IsNearlyZero(0.1) && PlayerAngle <= 0.34)
 	{
 		SetMovementMode(MOVE_Falling);
 		StartNewPhysics(deltaTime, Iterations);
@@ -609,23 +890,40 @@ void UAdvancedMovementComponent::PhysMantling(float deltaTime, int32 Iterations)
 		float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
 		remainingTime -= timeTick;
 
+		// Save the current values
+		FVector Adjusted;
+		const FVector OldLocation = UpdatedComponent->GetComponentLocation();
+
 		// The player is transitioning to the ledge
 		if (!UpdatedComponent->GetComponentLocation().Equals(MantleLedgeLocation, 0.1))
 		{
-			// save the current values
-			FVector Adjusted;
-			const FVector OldLocation = UpdatedComponent->GetComponentLocation();
+	
+			// Find the interp rotation
+			const FRotator MantleRotation = (-LedgeClimbNormal).Rotation();
+			const FRotator PlayerRotation = UpdatedComponent->GetComponentRotation();
+			FRotator TargetRotation = FRotator(0, MantleRotation.Yaw, 0);
+			
+			// Use speed adjustments to create your own ease in transitions
+			const float CurrentPercent = (MantleLedgeLocation - OldLocation).Size() / (MantleLedgeLocation - MantleStartLocation).Size();; // 0-1
+			const float InterpSpeedAdjustments = MantleRotationSpeedAdjustments ? FMath::Clamp(MantleRotationSpeedAdjustments->GetFloatValue(CurrentPercent * 10), 0.1, 10) : 1;
+			
+			// UKismetMathLibrary::RInterpTo();
+			FRotator Delta = (TargetRotation - PlayerRotation).GetNormalized();
+			FRotator AdjustedRotation = Delta * timeTick * MantleRotationSpeed * InterpSpeedAdjustments;
+			
+			// UE_LOGFMT(Movement, Log, "MantleRotation: {0}, PlayerRotation: {1}, TargetRotation: {2}, AdjustedRotation: {3}",
+			// 	MantleRotation.Yaw, PlayerRotation.Yaw, TargetRotation.Yaw, AdjustedRotation.Yaw);
 			
 			// Interp the character to the target location
 			Adjusted = MantleAndClimbInterp(timeTick, MantleStartLocation, MantleLedgeLocation, OldLocation, MantleSpeed, MantleSpeedAdjustments);
 			FHitResult Hit;
-			SafeMoveUpdatedComponent(Adjusted, UpdatedComponent->GetComponentRotation(), false, Hit);
+			SafeMoveUpdatedComponent(Adjusted, (PlayerRotation + AdjustedRotation).GetNormalized(), false, Hit);
 
 			// TODO: Error handling
 			
 			if (bDebugMantle)
 			{
-				UE_LOGFMT(LogTemp, Log, "{0}::Mantling ({1}) ->  ({2})({3}) Mantle/Location: ({4})({5}), Vector/Adjusted: ({6})({7}), Speed: ({8})",
+				UE_LOGFMT(Movement, Log, "{0}::Mantling ({1}) ->  ({2})({3}) Mantle/Location: ({4})({5}), Vector/Adjusted: ({6})({7}), Speed: ({8}), PlayerAngle: ({9})",
 					CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
 					*FString::SanitizeFloat(Time - MantleStartTime),
 					*GetMovementDirection(PlayerInput),
@@ -634,14 +932,15 @@ void UAdvancedMovementComponent::PhysMantling(float deltaTime, int32 Iterations)
 					*OldLocation.ToString(),
 					*(MantleLedgeLocation - OldLocation).GetSafeNormal().ToString(),
 					*Adjusted.ToString(),
-					Adjusted.Size()
+					Adjusted.Size(),
+					*FString::SanitizeFloat(PlayerAngle)
 				);
 			}
 		}
 		else
 		{
 			// if the player presses forward, climb up on the ledge.
-			if (bUseLedgeClimbing && PlayerInput.X > 0.1)
+			if (bUseLedgeClimbing && !PlayerInput.IsNearlyZero(0.1) && PlayerAngle > 0.64)
 			{
 				SetMovementMode(MOVE_Custom, MOVE_Custom_LedgeClimbing);
 				StartNewPhysics(deltaTime, Iterations);
@@ -675,14 +974,14 @@ void UAdvancedMovementComponent::PhysLedgeClimbing(float deltaTime, int32 Iterat
 		float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
 		remainingTime -= timeTick;
 
+		// Save the current values
+		FVector Adjusted;
+		const FVector OldLocation = UpdatedComponent->GetComponentLocation();
+		
 		// The player is transitioning to the ledge
 		const float CharacterHeightOffset = CharacterOwner->GetCapsuleComponent() ? CharacterOwner->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + LedgeClimbOffset : 90 + LedgeClimbOffset;
 		if (!UpdatedComponent->GetComponentLocation().Equals(LedgeClimbLocation + FVector(0, 0, CharacterHeightOffset), 0.1))
 		{
-			// save the current values
-			FVector Adjusted;
-			const FVector OldLocation = UpdatedComponent->GetComponentLocation();
-			
 			// Interp the character to the target location
 			Adjusted = MantleAndClimbInterp(timeTick, LedgeClimbStartLocation, LedgeClimbLocation + FVector(0, 0, CharacterHeightOffset), OldLocation, CurrentClimbSpeed, CurrentClimbSpeedAdjustments);
 			FHitResult Hit;
@@ -692,7 +991,7 @@ void UAdvancedMovementComponent::PhysLedgeClimbing(float deltaTime, int32 Iterat
 			
 			if (bDebugLedgeClimb)
 			{
-				UE_LOGFMT(LogTemp, Log, "{0}::LedgeClimbing ({1}) ->  ({2})({3}) Ledge/Location: ({4})({5}), Vector/Adjusted: ({6})({7}), Speed: ({8})",
+				UE_LOGFMT(Movement, Log, "{0}::LedgeClimbing ({1}) ->  ({2})({3}) Ledge/Location: ({4})({5}), Vector/Adjusted: ({6})({7}), Speed: ({8})",
 					CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
 					*FString::SanitizeFloat(Time - LedgeClimbStartTime),
 					*GetMovementDirection(PlayerInput),
@@ -844,7 +1143,7 @@ void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iteratio
 			if (bDebugWallRunning)
 			{
 				float AddedSpeed = Adjusted.Size2D();
-				UE_LOGFMT(LogTemp, Log, "{0}::WallRunning ({1}) ->  ({2})({3}) Adjusted: ({4}), Vel: ({5}), WallRunVector: ({6}), PlayerInput: ({7}), Angle: ({8}), SpeedCap: {9}, WallRunMultiplier: ({10})",
+				UE_LOGFMT(Movement, Log, "{0}::WallRunning ({1}) ->  ({2})({3}) Adjusted: ({4}), Vel: ({5}), WallRunVector: ({6}), PlayerInput: ({7}), Angle: ({8}), SpeedCap: {9}, WallRunMultiplier: ({10})",
 					CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"), *FString::SanitizeFloat(WallRunStartTime + WallRunDuration - Time),
 					WallRunNormal.Dot(UpdatedComponent->GetRightVector()) < 0 ? *FString("L") : *FString("R"),
 					*FString::SanitizeFloat(AddedSpeed),
@@ -864,177 +1163,6 @@ void UAdvancedMovementComponent::PhysWallRunning(float deltaTime, int32 Iteratio
 		}
 	}
 }
-
-
-void UAdvancedMovementComponent::CalcVelocity(float DeltaTime, float Friction, bool bFluid, float BrakingDeceleration)
-{
-	const float BaseSpeed = Velocity.Size2D();
-	FRotator MovementRotation(0, UpdatedComponent->GetComponentRotation().Yaw, 0);
-	FVector OldVelocity = Velocity;
-
-	FVector AccelDir = Acceleration.GetSafeNormal();
-	// FVector AccelDir;
-	
-	//--------------------------------------------------------------------------------------------------------------//
-	// Sliding																										//
-	//--------------------------------------------------------------------------------------------------------------//
-	if (IsSliding())
-	{
-		// Only Allow side strafing and prevent velocity being added during a strafe
-		Acceleration = FVector(UKismetMathLibrary::GetRightVector(MovementRotation) * PlayerInput.Y).GetSafeNormal() * Acceleration.Size2D();
-		
-		// Find strafe
-		AccelDir = (UKismetMathLibrary::GetRightVector(MovementRotation) * PlayerInput.Y).GetSafeNormal(); // Allow sideways movements, however don't add to the velocity
-		const float ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
-		const float AirSpeedCap = (GetMaxAcceleration() / 100) * StrafeSwaySpeedGainMultiplier; // Strafe sway should have more control without slowing down the character's momentum
-
-		// Friction affects our ability to change direction. This is only done for input acceleration, not path following.
-		const FVector AccelerationDir = Acceleration.GetSafeNormal();
-		const float VelSize = Velocity.Size();
-		Velocity = Velocity - (Velocity - AccelerationDir * VelSize) * FMath::Min(DeltaTime * Friction, 1.f);
-
-		const float AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
-		if (AddSpeed > 0.0f)
-		{
-			FVector RedirectedVelocity = Acceleration * SlidingRotationRate * DeltaTime;
-			RedirectedVelocity = RedirectedVelocity.GetClampedToMaxSize2D(AddSpeed);
-
-			Velocity += RedirectedVelocity;
-		}
-
-		// If strafing added extra speed while turning, add friction to slow us down
-		if (Velocity.Size2D() > OldVelocity.Size2D())
-		{
-			Velocity = Velocity.GetSafeNormal2D() * OldVelocity.Size2D();
-			ApplyVelocityBraking(DeltaTime, SlideBrakingFriction, BrakingDeceleration);
-		}
-		
-		return;
-	}
-	
-	
-	//--------------------------------------------------------------------------------------------------------------//
-	// All movement modes except for air																			//
-	//--------------------------------------------------------------------------------------------------------------//
-	if (MovementMode != MOVE_Falling) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
-	
-	
-	//--------------------------------------------------------------------------------------------------------------------------------------//
-	// Third person (with orient rotation to movement) physics																				//
-	//--------------------------------------------------------------------------------------------------------------------------------------//
-	// Strafing calculations causes problems if the character's movement isn't oriented to their movement
-	if (!bUseBhopping || bOrientRotationToMovement) return Super::CalcVelocity(DeltaTime, Friction, bFluid, BrakingDeceleration);
-	// If the player's rotation is oriented to the camera, it messes up the fp strafing calculations, and this prevents that from happening
-	
-	
-	//--------------------------------------------------------------------------------------------------------------------------------------//
-	// Air Strafing																															//
-	//--------------------------------------------------------------------------------------------------------------------------------------//
-	// Do not update velocity when using root motion or when SimulatedProxy and not simulating root motion - SimulatedProxy are repped their Velocity
-	if (!HasValidData() || HasAnimRootMotion() || DeltaTime < MIN_TICK_TIME || (CharacterOwner && CharacterOwner->GetLocalRole() == ROLE_SimulatedProxy && !bWasSimulatingRootMotion))
-	{
-		return;
-	}
-	
-	// Air strafe values
-	float ProjVelocity;
-	FVector AddedVelocity;
-	float AirSpeedCap; // How much speed is gained during air strafing?
-	float AirAccelerationMultiplier; // Drag is added to the equation if the accelerationMultiplier / 10 isn't the same as the player's velocity 
-	float AddSpeed;
-
-	
-	//--------------------------------------------------------------------------------------------------------------//
-	// AirStrafe Sway -> Air Control during specific movement actions (Wall jumps, ledge launches, etc.)			//
-	//--------------------------------------------------------------------------------------------------------------//
-	if (IsStrafeSwaying())
-	{
-		// Find strafe
-		ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
-		AirSpeedCap = (GetMaxAcceleration() / 100) * StrafeSwaySpeedGainMultiplier; // Strafe sway should have more control without slowing down the character's momentum
-		AirAccelerationMultiplier = StrafeSwayRotationRate;
-		
-		// Update the acceleration based on the character's air control
-		Acceleration = GetFallingLateralAcceleration(DeltaTime);
-		
-		// Allow Strafing, don't let the player stop the momentum from pressing an input in the opposite direction of the momentum
-		AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
-		if (AddSpeed > 0.0f)
-		{
-			AddedVelocity = Acceleration * AirAccelerationMultiplier * AirControl * DeltaTime;
-			AddedVelocity = AddedVelocity.GetClampedToMaxSize2D(AddSpeed);
-
-			// Don't allow the player to move against the strafe
-			const float AngleFromCurrentVelocity = Velocity.GetSafeNormal2D().Dot(AccelDir); 
-			if (AngleFromCurrentVelocity > -0.34) Velocity += AddedVelocity;
-		}
-		
-		/*
-		const FVector MovementDirection = Velocity.GetSafeNormal2D();
-		const FVector InputDirection = AccelDir;
-		FVector MovementVelocity = (MovementDirection * (1 - StrafeSwayInfluence)) + (InputDirection * StrafeSwayInfluence);
-		
-		// Apply the original velocity's gravity
-		MovementVelocity.Z = OldVelocity.Z;
-		Velocity = AccelDir * BaseSpeed;
-		
-		float Duration = 0;
-		if (BaseCharacter->IsLocallyControlled()) Duration = PrevWallJumpTime + StrafeSwayDuration - Time;
-		UE_LOGFMT(LogTemp, Log, "({0}) Strafe Sway ->  ({1}) Vel: ({2}), AccelDir: ({3}), Input: ({4}), Rotation: ({5}), Adjusted: ({6})",
-			Duration, *GetMovementDirection(Input), *Velocity.GetSafeNormal2D().ToString(), *AccelDir.ToString(), *Input.ToString(), *UpdatedComponent->GetComponentRotation().ToString(), *MovementVelocity.ToString());
-		*/
-	}
-
-	
-	//--------------------------------------------------------------------------------------------------------------//
-	// Strafing / Bhopping physics																					//
-	//--------------------------------------------------------------------------------------------------------------//
-	else
-	{
-		// Find strafe
-		ProjVelocity = Velocity.X * AccelDir.X + Velocity.Y * AccelDir.Y; // Strafing subtracts from this value, neutral defaults to the player speed, and negative values add to speed 
-		AirSpeedCap = (GetMaxAcceleration() / 100) * AirStrafeSpeedGainMultiplier; // How much speed is gained during air strafing?
-		AirAccelerationMultiplier = AirStrafeRotationRate; // Drag is added to the equation if the accelerationMultiplier / 10 isn't the same as the player's velocity 
-		
-		// Update the acceleration based on the character's air control
-		Acceleration = GetFallingLateralAcceleration(DeltaTime);
-		
-		// Add strafing momentum to the character's velocity 
-		AddSpeed = Acceleration.GetClampedToMaxSize2D(AirSpeedCap).Size2D() - ProjVelocity;
-		if (AddSpeed > 0.0f)
-		{
-			AddedVelocity = Acceleration * AirAccelerationMultiplier * AirControl * DeltaTime;
-			AddedVelocity = AddedVelocity.GetClampedToMaxSize2D(AddSpeed);
-			Velocity += AddedVelocity;
-		}
-	}
-	
-	// MovementInput, Gain/Lose Speed, AddedVelocity, Velocity, AirSpeedCap, AirAccelMultiplier
-	if (bDebugAirStrafe || bDebugStrafeSway)
-	{
-		if (AirStrafeSwayPhysics && !bDebugStrafeSway) return; // Only debug strafe sway
-		if (!AirStrafeSwayPhysics && !bDebugAirStrafe) return; // Only debug air strafe 
-
-		float PrevSpeed = OldVelocity.Size2D();
-		float Speed = Velocity.Size2D();
-		// Velocity/AccelDir // Speed (+/- Adjusted) // Cap / AccelMultiplier
-		UE_LOGFMT(LogTemp, Log, "{0}::{1} ({2}) ->  ({3})({4}) Vel/AccelDir: ({5})({6}) Speed: ({7})({8}), Cap: ({9}), AccelMultiplier: ({10})",
-			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
-			IsStrafeSwaying() ? *FString("StrafeSway") : FString("AirStrafe"),
-			IsStrafeSwaying() ? *FString::SanitizeFloat(StrafeSwayStartTime + StrafeSwayDuration - Time) : *FString(""),
-			*GetMovementDirection(PlayerInput),
-			Speed - PrevSpeed > 0 ? *FString("+") : *FString("-"),
-			*Velocity.GetSafeNormal2D().ToString(),
-			*FVector2D(AccelDir.X, AccelDir.Y).ToString(),
-			*FString::SanitizeFloat(Speed),
-			*FString::SanitizeFloat(Speed - PrevSpeed),
-			FMath::CeilToInt(AirSpeedCap),
-			*FString::SanitizeFloat(AirAccelerationMultiplier)
-		);
-	}
-}
-
-
 
 
 //------------------------------------------------------------------------------//
@@ -1072,7 +1200,7 @@ void UAdvancedMovementComponent::HandleFallingFunctionality(float deltaTime, flo
 	
 	// Apply gravity
 	Velocity = NewFallVelocity(Velocity, Gravity, GravityTime);
-	// UE_LOG(LogTemp, Log, TEXT("dt=(%.6f) OldLocation=(%s) OldVelocity=(%s) OldVelocityWithRootMotion=(%s) NewVelocity=(%s)"), timeTick, *(UpdatedComponent->GetComponentLocation()).ToString(), *OldVelocity.ToString(), *OldVelocityWithRootMotion.ToString(), *Velocity.ToString());
+	// UE_LOG(Movement, Log, TEXT("dt=(%.6f) OldLocation=(%s) OldVelocity=(%s) OldVelocityWithRootMotion=(%s) NewVelocity=(%s)"), timeTick, *(UpdatedComponent->GetComponentLocation()).ToString(), *OldVelocity.ToString(), *OldVelocityWithRootMotion.ToString(), *Velocity.ToString());
 
 	// Root motion and friction
 	ApplyRootMotionToVelocity(timeTick);
@@ -1111,7 +1239,7 @@ void UAdvancedMovementComponent::HandleFallingFunctionality(float deltaTime, flo
 			}
 		}
 	}
-	
+
 	if (bNotifyApex && (Velocity.Z < 0.f))
 	{
 		// Just passed jump apex since now going down
@@ -1167,7 +1295,8 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 
 	// Wall jump and wall movement both need the player's input for calculations
 	const FRotator CharacterRotation(0, UpdatedComponent->GetComponentRotation().Yaw, 0);
-	FVector AccelDir = (FVector(UKismetMathLibrary::GetForwardVector(CharacterRotation) * PlayerInput.X) + FVector(UKismetMathLibrary::GetRightVector(CharacterRotation) * PlayerInput.Y)).GetSafeNormal();
+	// FVector AccelDir = (FVector(UKismetMathLibrary::GetForwardVector(CharacterRotation) * PlayerInput.X) + FVector(UKismetMathLibrary::GetRightVector(CharacterRotation) * PlayerInput.Y)).GetSafeNormal(); // Walls adjust this
+	FVector AccelDir = Acceleration.GetSafeNormal();
 
 	
 	// Check if the player is trying to wall jump
@@ -1184,6 +1313,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 		// Compute impact deflection based on final velocity, not integration step.
 		// This allows us to compute a new velocity from the deflected vector, and ensures the full gravity effect is included in the slide result.
 		Adjusted = Velocity * timeTick;
+
 		
 		// See if we can convert a normally invalid landing spot (based on the hit result) to a usable one.
 		if (!Hit.bStartPenetrating && ShouldCheckForValidLandingSpot(timeTick, Adjusted, Hit))
@@ -1200,8 +1330,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 		}
 		
 		// Wall Climb
-		const float Angle = 180 - UKismetMathLibrary::DegAcos(Hit.Normal.Dot(UpdatedComponent->GetForwardVector()));
-		if (CanWallClimb() && Angle < WallClimbAcceptableAngle)
+		if (CanWallClimb() && TryingToClimbWall(Hit.Normal))
 		{
 			PrevWallClimbLocation = Hit.Location;
 			PrevWallClimbNormal = Hit.ImpactNormal;
@@ -1211,6 +1340,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 		
 		// Wall Run
 		const float Speed = Velocity.Size2D();
+		const float Angle = 180 - UKismetMathLibrary::DegAcos(Hit.Normal.Dot(UpdatedComponent->GetForwardVector()));
 		if (CanWallRun(Hit) && Speed > WallRunSpeedThreshold && Angle > 90 - WallRunAcceptableAngleRadius && Angle < 90 + WallRunAcceptableAngleRadius)
 		{
 			WallRunWall = Hit.GetComponent();
@@ -1219,6 +1349,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 			SetMovementMode(MOVE_Custom, MOVE_Custom_WallRunning);
 			StartNewPhysics(deltaTime, Iterations);
 		}
+
 		
 		// If we've changed physics mode, abort.
 		HandleImpact(Hit, LastMoveTimeSlice, Adjusted);
@@ -1285,8 +1416,7 @@ void UAdvancedMovementComponent::FallingMovementPhysics(float deltaTime, float& 
 			FVector VelocityWithGravity = NewFallVelocity(Velocity, Gravity* GravityFactor, timeTick);
 			Velocity.Z = VelocityWithGravity.Z;
 
-			// TODO: Factor gravity based on the slope angle to allow the player to control while wall sliding
-			float SlopeAngle = Hit.Normal.Dot(UpdatedComponent->GetForwardVector()); 
+			// TODO: Factor gravity based on the floor angle to allow the player to control while wall sliding
 			
 			// Move in deflected direction.
 			SafeMoveUpdatedComponent( Delta, PawnRotation, true, Hit);
@@ -1494,14 +1624,13 @@ void UAdvancedMovementComponent::CalculateMantleJumpTrajectory(const FVector2D S
 	const FVector AccelDir = Acceleration.GetSafeNormal();
 	const FVector OldVelocity = Velocity;
 
-	const FVector AddedVelocity = AccelDir * FVector(SpeedBoost.X, SpeedBoost.X, SpeedBoost.Y);
+	const FVector AddedVelocity = AccelDir * FVector(SpeedBoost.X, SpeedBoost.X, 0) + FVector(0, 0, SpeedBoost.Y);
 	Velocity += AddedVelocity;
 
 	if (bDebugMantleJump)
 	{
-		UE_LOGFMT(LogTemp, Warning, "{0}::MantleJump ({1}) ->  ({2})({3}) Initial/Vel: ({4})({5}), AdditionalVelocity: ({6})",
+		UE_LOGFMT(Movement, Warning, "{0}::MantleJump () ->  ({1})({2}) Initial/Vel: ({3})({4}), AdditionalVelocity: ({5})",
 			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
-			*FString::SanitizeFloat(Time),
 			*GetMovementDirection(PlayerInput),
 			Velocity.Size(),
 			*OldVelocity.ToString(),
@@ -1555,7 +1684,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(float DeltaTime, in
 			const FVector WallJumpTrajectory = (WallLocation - (LocationAlignedToWall + (Wall.ImpactNormal * DistanceFromWall))).GetSafeNormal();
 			WallJump = (WallJumpTrajectory - 2 * (WallJumpTrajectory | Wall.ImpactNormal) * Wall.ImpactNormal).GetSafeNormal();
 
-			if (bDebugWallJumpTrajectory)
+			if (bDebugWallJumpTrace)
 			{
 				DrawDebugBox(GetWorld(), LocationAlignedToWall, FVector(10), FColor::Red, false, TraceDuration);
 				DrawDebugBox(GetWorld(), LocationAlignedToWall + Wall.ImpactNormal * DistanceFromWall, FVector(10), FColor::Orange, false, TraceDuration);
@@ -1575,7 +1704,6 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(float DeltaTime, in
 		{
 			WallJump = FVector(WallJump.X, WallJump.Y, 0.5);
 		}
-
 	}
 	
 	
@@ -1584,6 +1712,8 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(float DeltaTime, in
 	const FVector RedirectedVelocity = FVector(WallJump.X, WallJump.Y, 0) * FMath::Max(CurrentSpeed, Speed);
 	Velocity = RedirectedVelocity + (WallJump * FVector(Boost.X, Boost.X, Boost.Y));
 	PrevWallJumpNormal = Wall.ImpactNormal;
+	PrevWallJumpLocation = Wall.Location;
+	PrevWallJumpTime = Time;
 	
 	SetMovementMode(MOVE_Falling);
 	EnableStrafeSwayPhysics();
@@ -1605,7 +1735,7 @@ void UAdvancedMovementComponent::CalculateWallJumpTrajectory(float DeltaTime, in
 			DebugPrevLocation = FVector();
 		}
 		
-		UE_LOGFMT(LogTemp, Warning, "{0}::WallJump ({1}) ->  ({2})({3}) Initial/Vel: ({4})({5}), Boost: ({6}), CapturedSpeed: ({7}), Wall/Prev Location: ({8})({9})",
+		UE_LOGFMT(Movement, Warning, "{0}::WallJump ({1}) ->  ({2})({3}) Initial/Vel: ({4})({5}), Boost: ({6}), CapturedSpeed: ({7}), Wall/Prev Location: ({8})({9})",
 			CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
 			*PrevState,
 			*GetMovementDirection(PlayerInput),
@@ -1637,6 +1767,8 @@ void UAdvancedMovementComponent::ResetWallJumpInformation(const EMovementMode Pr
 	if (PrevMode == MOVE_Falling)
 	{
 		PrevWallJumpNormal = FVector::ZeroVector;
+		PrevWallJumpLocation = FVector::ZeroVector;
+		PrevWallJumpTime = 0;
 	}
 	else if (PrevMode == MOVE_Walking)
 	{
@@ -1676,11 +1808,6 @@ void UAdvancedMovementComponent::BaseSlidingFunctionality(float deltaTime, int32
 		float SlopeAngle = CurrentFloor.HitResult.ImpactNormal.Dot(UpdatedComponent->GetForwardVector()) * SlideAngleFrictionMultiplier;
 		const float SlidingFrictionCalc = FMath::Clamp(SlidingFriction - SlopeAngle, 0, SlidingFriction * 3);
 		CalcVelocity(timeTick, SlidingFrictionCalc, false, GetMaxBrakingDeceleration());
-
-		if (bDebugSlide)
-		{
-			UE_LOGFMT(LogTemp, Warning, "SlopeAngle: {0}, Friction: {1}", SlopeAngle, SlidingFriction - SlopeAngle);
-		}
 	}
 }
 
@@ -1707,7 +1834,7 @@ void UAdvancedMovementComponent::GroundMovementPhysics(float deltaTime, int32 It
 		const float timeTick = GetSimulationTimeStep(remainingTime, Iterations);
 		remainingTime -= timeTick;
 
-		// UE_LOGFMT(LogTemp, Log, "{0} Physics(Walking): {2}", CharacterOwner->HasAuthority() ? "Server" : "Client", Time);
+		// UE_LOGFMT(Movement, Log, "{0} Physics(Walking): {2}", CharacterOwner->HasAuthority() ? "Server" : "Client", Time);
 		
 		// Save current values
 		UPrimitiveComponent* const OldBase = GetMovementBase();
@@ -1902,23 +2029,22 @@ bool UAdvancedMovementComponent::CanSlide() const
 {
 	if (!bUseSliding) return false;
 	if (!CharacterOwner->GetCapsuleComponent() || IsFalling()) return false;
-	if (Velocity.Size2D() < SlideEnterThreshold) return false;
+	if (PrevSlideTime + SlideDelay > Time) return false;
+	if (!IsCrouching()) return false;
 	return true;
 }
 
 
 void UAdvancedMovementComponent::EnterSlide(EMovementMode PrevMode, ECustomMovementMode PrevCustomMode)
 {
-	Velocity += Velocity.GetSafeNormal2D() * SlideEnterImpulse;
+	Velocity += Velocity.GetSafeNormal2D() * SlideEnterBoost;
+	SlideStartTime = Time;
 }
 
 
 void UAdvancedMovementComponent::ExitSlide()
 {
-	if (IsSliding())
-	{
-		SetMovementMode(MOVE_Walking);
-	}
+	PrevSlideTime = Time;
 }
 #pragma endregion
 
@@ -1928,13 +2054,20 @@ void UAdvancedMovementComponent::ExitSlide()
 //------------------------------------------------------------------------------//
 // WallClimb Logic																//
 //------------------------------------------------------------------------------//
-#pragma region Wall Running
+#pragma region Wall Climbing
 bool UAdvancedMovementComponent::CanWallClimb() const
 {
 	if (!bUseWallClimbing) return false;
 	if (WallClimbInterval + PrevWallClimbTime > Time) return false;
-	if (PlayerInput.X < 0.1) return false;
+	if (PlayerInput.IsNearlyZero(0.1)) return false;
 	return true;
+}
+
+bool UAdvancedMovementComponent::TryingToClimbWall(FVector WallNormal) const
+{
+	const float PlayerAngle = 180 - UKismetMathLibrary::DegAcos(WallNormal.Dot(UpdatedComponent->GetForwardVector()));
+	if (bOrientRotationToMovement) return WallClimbAcceptableAngle * 0.64 > PlayerAngle;
+	else return WallClimbAcceptableAngle > PlayerAngle;
 }
 
 
@@ -1985,74 +2118,49 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 	CharacterActors.AddUnique(CharacterOwner);
 	
 	// Search for a wall
-	const FVector InitialTraceStart = UpdatedComponent->GetComponentLocation() - FVector(0, 0, MantleTraceHeightOffset);
-	const FVector InitialTraceEnd = InitialTraceStart + UpdatedComponent->GetForwardVector() * MantleTraceDistance;
+	FVector InitialTraceStart = UpdatedComponent->GetComponentLocation() - FVector(0, 0, MantleTraceHeightOffset);
+	FVector InitialTraceEnd = InitialTraceStart + UpdatedComponent->GetForwardVector() * MantleTraceDistance;
+	// if (MantleWallNormal.IsNearlyZero()) InitialTraceEnd = InitialTraceStart + UpdatedComponent->GetForwardVector() * MantleTraceDistance;
+	// else InitialTraceEnd = InitialTraceStart + (-MantleWallNormal * MantleTraceDistance);
+	
 	FHitResult Wall;
 	UKismetSystemLibrary::LineTraceSingleForObjects(
-		GetWorld(),
-		InitialTraceStart,
-		InitialTraceEnd,
-		MantleObjects,
-		false,
-		CharacterActors,
+		GetWorld(), InitialTraceStart, InitialTraceEnd,
+		MantleObjects,false, CharacterActors,
 		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
-		Wall,
-		true,
-		FColor::Emerald,
-		FColor::Red,
-		TraceDuration
+		Wall,true, FColor::Emerald, FColor::Red, TraceDuration
 	);
-
 	if (!Wall.IsValidBlockingHit())
 	{
 		return false;
 	}
 
 	// Search for a valid ledge
-	const FVector LedgeSurfaceEnd = Wall.Location + (UpdatedComponent->GetForwardVector() * MantleSurfaceTraceFromLedgeOffset);
+	const FVector LedgeSurfaceEnd = Wall.Location + (-Wall.Normal * MantleSurfaceTraceFromLedgeOffset);
 	const FVector LedgeSurfaceStart = LedgeSurfaceEnd + FVector(0, 0, MantleSecondTraceDistance);
 	FHitResult Ledge;
 	UKismetSystemLibrary::LineTraceSingleForObjects(
-		GetWorld(),
-		LedgeSurfaceStart,
-		LedgeSurfaceEnd,
-		MantleObjects,
-		false,
-		CharacterActors,
+		GetWorld(), LedgeSurfaceStart, LedgeSurfaceEnd,
+		MantleObjects, false, CharacterActors,
 		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
-		Ledge,
-		true,
-		FColor::Emerald,
-		FColor::Red,
-		TraceDuration
+		Ledge, true, FColor::Emerald, FColor::Red, TraceDuration
 	);
-	
 	if (!Ledge.IsValidBlockingHit() || LedgeSurfaceStart.Equals(Ledge.ImpactPoint, 1))
 	{
 		return false;
 	}
 	
 	// Check if the player is able to climb to it, and if they have to crouch
-	FVector FrontOfLedgeMidpoint = Ledge.Location - (UpdatedComponent->GetForwardVector() * (MantleSurfaceTraceFromLedgeOffset + CharacterRadius + ClimbLocationSpaceOffset)) + FVector(0, 0, MantleTraceHeightOffset + CharacterHemisphereHeight);
+	FVector FrontOfLedgeMidpoint = Ledge.Location - (-Wall.Normal * (MantleSurfaceTraceFromLedgeOffset + CharacterRadius + ClimbLocationSpaceOffset)) + FVector(0, 0, MantleTraceHeightOffset + CharacterHemisphereHeight);
 	FVector ClimbStart = FrontOfLedgeMidpoint + (FVector(0, 0, CharacterHalfHeightNoHemisphere * 2)) - FVector(0, 0, MantleTraceHeightOffset);
 	FVector ClimbEnd = FVector(ClimbStart.X, ClimbStart.Y, UpdatedComponent->GetComponentLocation().Z + MantleTraceHeightOffset - CharacterHalfHeightNoHemisphere);
 	FHitResult ClimbSpace;
 	UKismetSystemLibrary::SphereTraceSingleForObjects(
-		GetWorld(),
-		ClimbStart,
-		ClimbEnd,
-		CharacterRadius,
-		MantleObjects,
-		false,
-		CharacterActors,
+		GetWorld(), ClimbStart, ClimbEnd, CharacterRadius,
+		MantleObjects, false, CharacterActors,
 		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
-		ClimbSpace,
-		true,
-		FColor::Emerald,
-		FColor::Red,
-		TraceDuration
+		ClimbSpace, true, FColor::Turquoise, FColor::Red, TraceDuration
 	);
-
 	if (ClimbSpace.IsValidBlockingHit())
 	{
 		return false;
@@ -2063,21 +2171,11 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 	FVector LedgeWalkEnd = LedgeWalkStart + FVector(0, 0, CharacterHalfHeightNoHemisphere * 2) - FVector(0, 0, MantleTraceHeightOffset);
 	FHitResult LedgeRoom;
 	UKismetSystemLibrary::SphereTraceSingleForObjects(
-		GetWorld(),
-		LedgeWalkStart,
-		LedgeWalkEnd,
-		CharacterRadius,
-		MantleObjects,
-		false,
-		CharacterActors,
+		GetWorld(), LedgeWalkStart, LedgeWalkEnd, CharacterRadius,
+		MantleObjects, false, CharacterActors,
 		bDebugMantleAndClimbTrace ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None,
-		LedgeRoom,
-		true,
-		FColor::Emerald,
-		FColor::Red,
-		TraceDuration
+		LedgeRoom, true, FColor::Emerald, FColor::Red,TraceDuration
 	);
-
 	if (LedgeRoom.IsValidBlockingHit())
 	{
 		return false;
@@ -2085,9 +2183,9 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 
 	// Calculate the mantle location
 	LedgeClimbLocation = Ledge.Location;
-	LedgeClimbNormal = Ledge.Normal;
+	LedgeClimbNormal = Wall.Normal;
 	MantleLedgeLocation = LedgeClimbLocation
-		- UpdatedComponent->GetForwardVector() * (MantleSurfaceTraceFromLedgeOffset + CharacterRadius + ClimbLocationSpaceOffset + MantleLocationSpaceOffset)
+		- -Wall.Normal * (MantleSurfaceTraceFromLedgeOffset + CharacterRadius + ClimbLocationSpaceOffset + MantleLocationSpaceOffset)
 		+ FVector(0, 0, MantleLedgeLocationOffset);
 	if (bDebugMantleAndClimbTrace)
 	{
@@ -2107,7 +2205,8 @@ bool UAdvancedMovementComponent::CheckIfSafeToMantleLedge()
 	// If in walking or in air, just use a normal ledge climb
 	// If falling quickly through the air, use a slow ledge climb type
 	// If walking and it's an object close to the ground, use a quick ledge climb type
-	ClimbType = EClimbType::Normal;
+	if (UpdatedComponent->GetComponentLocation().Z > MantleLedgeLocation.Z) ClimbType = EClimbType::Fast;
+	else ClimbType = EClimbType::Normal;
 	
 	return true;
 }
@@ -2119,7 +2218,7 @@ FVector UAdvancedMovementComponent::MantleAndClimbInterp(const float DeltaTime, 
 	const FVector MovementVector = TargetLocation - CurrentLocation;
 	const FVector MovementDirection = MovementVector.GetSafeNormal();
 
-	// Use speed adjustments to create your own ease transitions
+	// Use speed adjustments to create your own ease in transitions
 	const float CurrentPercent = MovementVector.Size() / (TargetLocation - StartLocation).Size(); // 0-1
 	const float InterpSpeedAdjustments = SpeedAdjustments ? FMath::Clamp(SpeedAdjustments->GetFloatValue(CurrentPercent * 10), 0.1, 10) : 1;
 
@@ -2174,13 +2273,14 @@ void UAdvancedMovementComponent::ExitLedgeClimb()
 	LedgeClimbStartLocation = FVector();
 	LedgeClimbLocation = FVector();
 	LedgeClimbNormal = FVector();
-
+	
 	// Revert the collisions for traditional movement
 	if (CharacterOwner->GetCapsuleComponent())
 	{
 		CharacterOwner->GetCapsuleComponent()->SetCollisionResponseToChannels(CapturedCollisionResponsesOutsideOfLedgeClimbing);
 	}
-
+	
+	// Default speed for safety precautions
 	CurrentClimbSpeed = 340;
 	CurrentClimbSpeedAdjustments = nullptr;
 	ClimbType = EClimbType::None;
@@ -2247,8 +2347,8 @@ void UAdvancedMovementComponent::MoveAutonomous(float ClientTimeStamp, float Del
 	FMCharacterNetworkMoveData* MoveData = static_cast<FMCharacterNetworkMoveData*>(GetCurrentNetworkMoveData());
 	if (MoveData)
 	{
-		PlayerInput = MoveData->MoveData_Input;
-		Time = MoveData->MoveData_Time.X;
+		PlayerInput = FVector2D(MoveData->MoveData_InputAndTime.X, MoveData->MoveData_InputAndTime.Y);
+		Time = MoveData->MoveData_InputAndTime.Z;
 	}
 	
 	Super::MoveAutonomous(ClientTimeStamp, DeltaTime, CompressedFlags, NewAccel);
@@ -2272,8 +2372,7 @@ void UAdvancedMovementComponent::FMCharacterNetworkMoveData::ClientFillNetworkMo
 {
 	Super::ClientFillNetworkMoveData(ClientMove, MoveType);
 	const FMSavedMove& SavedMove = static_cast<const FMSavedMove&>(ClientMove);
-	MoveData_Input = SavedMove.PlayerInput;
-	MoveData_Time = FVector_NetQuantize10(SavedMove.Time, 0, 0);
+	MoveData_InputAndTime = FVector(SavedMove.PlayerInput.X, SavedMove.PlayerInput.Y, SavedMove.Time);
 }
 
 
@@ -2295,7 +2394,7 @@ void UAdvancedMovementComponent::FMSavedMove::Clear()
 	SavedRequestToStartAiming = 0;
 	SavedRequestToStartMantling = 0;
 	SavedRequestToStartSprinting = 0;
-	PlayerInput = FVector::ZeroVector;
+	PlayerInput = FVector2D::ZeroVector;
 }
 
 
@@ -2321,8 +2420,7 @@ bool UAdvancedMovementComponent::FMCharacterNetworkMoveData::Serialize(UCharacte
 	bool bLocalSuccess = true;
 
 	// Save move values
-	MoveData_Time.NetSerialize(Ar, PackageMap, bLocalSuccess); // TODO: Learn how to serialize things
-	SerializeOptionalValue<FVector_NetQuantize10>(bIsSaving, Ar, MoveData_Input, FVector_NetQuantize10::ZeroVector);
+	MoveData_InputAndTime.NetSerialize(Ar, PackageMap, bLocalSuccess); // TODO: Learn how to serialize things
 	
 	return !Ar.IsError();
 }
@@ -2409,7 +2507,7 @@ void UAdvancedMovementComponent::StartSprinting() { SprintPressed = true; }
 void UAdvancedMovementComponent::StopSprinting() { SprintPressed = false; }
 void UAdvancedMovementComponent::StartAiming() { AimPressed = true; }
 void UAdvancedMovementComponent::StopAiming() { AimPressed = false; }
-void UAdvancedMovementComponent::UpdatePlayerInput(const FVector& InputVector) { PlayerInput = InputVector; }
+void UAdvancedMovementComponent::UpdatePlayerInput(const FVector2D& InputVector) { PlayerInput = InputVector; }
 void UAdvancedMovementComponent::StartWallJump() { WallJumpPressed = true; }
 void UAdvancedMovementComponent::StopWallJump() { WallJumpPressed = false; }
 void UAdvancedMovementComponent::DisableStrafeSwayPhysics() { AirStrafeSwayPhysics = false; }
@@ -2417,6 +2515,12 @@ void UAdvancedMovementComponent::EnableStrafeSwayPhysics()
 {
 	StrafeSwayStartTime = Time;
 	AirStrafeSwayPhysics = true;
+}
+void UAdvancedMovementComponent::DisableStrafeLurchPhysics() { AirStrafeLurchPhysics = false; }
+void UAdvancedMovementComponent::EnableStrafeLurchPhysics()
+{
+	StrafeLurchStartTime = Time;
+	AirStrafeLurchPhysics = true;
 }
 #pragma endregion
 
@@ -2431,27 +2535,56 @@ bool UAdvancedMovementComponent::DoJump(bool bReplayingMoves)
 {
 	if (CharacterOwner && CharacterOwner->CanJump())
 	{
+		FVector AccelDir = Acceleration.GetSafeNormal();
+		FVector OldVelocity = Velocity;
+		
 		// Don't jump if we can't move up/down.
 		if (!bConstrainToPlane || FMath::Abs(PlaneConstraintNormal.Z) != 1.f)
 		{
+			// Unreal handles movement logic with client information, and we need to find a way to either make this frame dependent or challenging so it isn't easy to accomplish
+
+			// Jump forward boost for jumps while sliding
+			if (IsSliding())
+			{
+				const FVector ForwardVector = Velocity.GetSafeNormal() * SlideJumpBoost;
+				Velocity += ForwardVector;
+			}
+			
 			// Mantle Jumping
 			if (IsMantleJump())
 			{
 				CalculateMantleJumpTrajectory(MantleJumpBoost);
+				EnableStrafeLurchPhysics();
+
+				// Super glide input (in order for jumps to work while crouching, you need to adjust the CanJump() function to allow jumping while crouching)
+				if (bWantsToCrouch) // CanSlide()
+				{
+						Velocity += AccelDir * FVector(SuperGlideBoost.X, SuperGlideBoost.X, 0) + FVector(0, 0, SuperGlideBoost.Y);
+				}
+			}
+			else
+			{
+				Velocity.Z = FMath::Max<FVector::FReal>(Velocity.Z + 1.f, JumpZVelocity);
 			}
 			
-			// Jump forward boost for slide jumps
-			if (IsSliding())
+			if (bDebugWallJump)
 			{
-				// Add the boost based on how fast the character is walking through it's forward movement speed
-				float ForwardVelocity = GetMaxSpeed() / FVector::DotProduct(Velocity, UpdatedComponent->GetForwardVector());
-				const FVector ForwardVector = UpdatedComponent->GetForwardVector() * SlideJumpSpeed;
-				Velocity += ForwardVector;
-				//UE_LOG(LogTemp, Warning, TEXT("%s() %s: Slide Jump Calculations, MaxSpeed: %f, ForwardVelocity: %f, ForwardVector: %s, new Velocity: %s"), *FString(__FUNCTION__), *GetNameSafe(CharacterOwner), GetMaxSpeed(), ForwardVelocity, *ForwardVector.ToCompactString(), *Velocity.ToCompactString());
+				//UE_LOG(Movement, Warning, TEXT("%s() %s: Go, do a crime. new velocity: %s"), *FString(__FUNCTION__), *GetNameSafe(CharacterOwner), *Velocity.ToCompactString());
+				const FString JumpVariation = IsMantleJump() ? FString("MantleJump") : IsSliding() ? FString("SlideJump") : FString("");
+				UE_LOGFMT(Movement, Warning, "{0}::Jumped ({1}) ->  ({2})({3}) Initial/Vel: ({4})({5}), JumpBoost: ({6}), CapturedSpeed: ({7})",
+					CharacterOwner->HasAuthority() ? *FString("Server") : *FString("Client"),
+					*JumpVariation,
+					*GetMovementDirection(PlayerInput),
+					*FString::SanitizeFloat(JumpZVelocity),
+					*OldVelocity.ToString(),
+					*Velocity.ToString(),
+					IsMantleJump() ? *WallJumpBoost.ToString() :
+					IsSliding() ? *FVector2D(SlideJumpBoost, 0).ToString() :
+					*FVector2D(JumpZVelocity, 0).ToString(),
+					*FString::SanitizeFloat(Velocity.Size2D())
+				);
 			}
-
-			Velocity.Z = FMath::Max<FVector::FReal>(Velocity.Z + 1.f, JumpZVelocity);
-			//UE_LOG(LogTemp, Warning, TEXT("%s() %s: Go, do a crime. new velocity: %s"), *FString(__FUNCTION__), *GetNameSafe(CharacterOwner), *Velocity.ToCompactString());
+			
 			SetMovementMode(MOVE_Falling);
 			return true;
 		}
@@ -2747,6 +2880,31 @@ void UAdvancedMovementComponent::HandleCrouchLogic()
 // Get And Set functions														//
 //------------------------------------------------------------------------------//
 #pragma region Get and set functions
+float UAdvancedMovementComponent::GetMaxSpeed() const
+{
+	// Player input based movement logic
+	if (IsMovingOnGround())
+	{
+		if (SprintPressed) return MaxWalkSpeed * SprintSpeedMultiplier;
+		if (AimPressed) return MaxWalkSpeed * AimSpeedMultiplier;
+		// if (Character->bWalking) return MaxWalkSpeed * WalkSpeedMultiplier;
+		if (IsSliding()) return SlideSpeedLimit; // TODO: Investigate crouching logic and it's behavior during air movement, and perhaps refactor this into the normal walking movement logic with physics adjustments similar to air strafe lurches
+		if (IsWallRunning()) return WallRunSpeed;
+		if (IsCrouching())
+		{
+			if (SprintPressed) return MaxWalkSpeedCrouched * CrouchSprintSpeedMultiplier;
+			else return MaxWalkSpeedCrouched;
+		}
+	}
+	if (IsFalling())
+	{
+		// air strafing movement technically doesn't have a limit. This is for handling third person speeds that inhibit other logic
+	}
+	
+	return Super::GetMaxSpeed();
+}
+
+
 float UAdvancedMovementComponent::GetMaxAcceleration() const
 {
 	if (IsFalling()) return StrafingMaxAcceleration;
@@ -2782,7 +2940,7 @@ void UAdvancedMovementComponent::UpdateExternalMovementModeInformation(EMovement
 // Utility																		//
 //------------------------------------------------------------------------------//
 #pragma region Utility
-FVector UAdvancedMovementComponent::GetPlayerInput() const
+FVector2D UAdvancedMovementComponent::GetPlayerInput() const
 {
 	return PlayerInput;
 }
@@ -2817,6 +2975,21 @@ FVector UAdvancedMovementComponent::GetLedgeClimbNormal() const
 	return LedgeClimbNormal;
 }
 
+FVector UAdvancedMovementComponent::GetWallJumpLocation() const
+{
+	return PrevWallJumpLocation;
+}
+
+FVector UAdvancedMovementComponent::GetWallJumpNormal() const
+{
+	return PrevWallJumpNormal;
+}
+
+float UAdvancedMovementComponent::GetPreviousWallJumpTime() const
+{
+	return PrevWallJumpTime;
+}
+
 
 FVector UAdvancedMovementComponent::ComputeSlideVector(const FVector& Delta, const float HitTime, const FVector& Normal, const FHitResult& Hit) const
 {
@@ -2832,7 +3005,7 @@ FVector UAdvancedMovementComponent::ComputeSlideVector(const FVector& Delta, con
 }
 
 
-void UAdvancedMovementComponent::HandleInAirLogic()
+void UAdvancedMovementComponent::ResetFallingStateInformation(EMovementMode PrevMode, uint8 PrevCustomMode)
 {
 // 	BaseAbilitySystem = BaseAbilitySystem ? BaseAbilitySystem : GetAbilitySystem();
 // 	if (!BaseAbilitySystem) return;
@@ -2856,6 +3029,21 @@ void UAdvancedMovementComponent::HandleInAirLogic()
 }
 
 
+void UAdvancedMovementComponent::ResetGroundStateInformation(EMovementMode PrevMode, uint8 PrevCustomMode)
+{
+	if (IsMovingOnGround())
+	{
+		WalkingStartTime = Time;
+		
+		if (IsStrafeLurching())
+		{
+			DisableStrafeLurchPhysics();
+		}
+	}
+
+}
+
+
 // UBaseAbilitySystem* UAdvancedMovementComponent::GetAbilitySystem() const
 // {
 // 	if (!BaseCharacter) return nullptr;
@@ -2874,7 +3062,7 @@ void UAdvancedMovementComponent::DebugGroundMovement(FString Message, FColor Col
 }
 
 
-FString UAdvancedMovementComponent::GetMovementDirection(const FVector& InputVector) const
+FString UAdvancedMovementComponent::GetMovementDirection(const FVector2D& InputVector) const
 {
 	const float Forwards = InputVector.X;
 	const float Sideways = InputVector.Y;

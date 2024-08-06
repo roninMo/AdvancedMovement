@@ -404,10 +404,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "-100", UIMax = "100", EditCondition = "bUseWallClimbing", EditConditionHides))
 	float WallClimbGravityLimit;
 
-	/** If the player was previously falling, what speed do we start adding velocity from? */
+	/** Interval between when a player jumps and when they're able to transition to wall climbing. This prevents errors when jumping while already on a wall */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing", meta=(UIMin = "-100", UIMax = "0", ClampMax = "0", EditCondition = "bUseWallClimbing", EditConditionHides))
-	float WallClimbAddSpeedThreshold;
-
+	float WallClimbJumpInterval;
+	
 	/** Wall climbing information */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Wall Climbing|Debug", meta=(EditCondition = "bUseWallClimbing", EditConditionHides))
 	bool bDebugWallClimb;
@@ -419,6 +419,9 @@ protected:
 
 	/** The previous wall normal of the wall the player started climbing */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing") FVector PrevWallClimbNormal;
+
+	/** The current duration of the wall climb. This is reset on the ground and after intervals */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing") float CurrentWallClimbDuration;
 
 	/** When the player had began climbing */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Climbing") float WallClimbStartTime;
@@ -496,7 +499,7 @@ protected:
 	/** The time the player starts mantling */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling") float MantleStartTime;
 
-	/** The mantle ledge location */
+	/** The mantle start location */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Mantling") FVector MantleStartLocation;
 
 	/** The mantle ledge location */
@@ -529,6 +532,9 @@ protected:
 
 
 protected:
+	/** True if the player has to crouch during a ledge climb */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") bool bCrouchedLedgeClimb;
+	
 	/** The time the player starts ledge climbing */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Ledge Climbing") float LedgeClimbStartTime;
 
@@ -579,7 +585,7 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(EditCondition = "bUseWallRunning", EditConditionHides))
 	FVector2D WallRunMultiplier;
 	
-	/** How quickly the character should be moving before they're allowed to wall run */
+	/** How quickly the character should be moving alongside the wall before they're allowed to wall run */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Character Movement (General Settings)|Wall Running", meta=(UIMin = "0", UIMax = "1000", EditCondition = "bUseWallRunning", EditConditionHides))
 	float WallRunSpeedThreshold;
 
@@ -601,7 +607,7 @@ protected:
 
 	/** Wall run trace information */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Character Movement (General Settings)|Wall Running|Debug", meta=(EditCondition = "bUseWallRunning", EditConditionHides))
-	bool bDebugWallTraces;
+	bool bDebugWallRunTraces;
 
 	
 protected:
@@ -705,6 +711,9 @@ protected:
 
 
 protected:
+	/** The time the player previously started a jump */
+	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding") float JumpStartTime;
+	
 	/** The time the player started walking */
 	UPROPERTY(Transient, BlueprintReadWrite, Category="Character Movement (General Settings)|Sliding") float WalkingStartTime;
 
@@ -786,6 +795,9 @@ protected:
 	/** Update the character state in PerformMovement after the position change. Some rotation updates happen after this. */
 	virtual void UpdateCharacterStateAfterMovement(float DeltaSeconds) override;
 
+	/** Function called every frame on the Component. Override this function to implement custom logic to be executed every frame. */
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	
 	
 //------------------------------------------------------------------------------//
 // Physics Functions															//
@@ -939,6 +951,8 @@ protected:
 	/** Reset wall climb information based on specific states and movement modes */
 	virtual void ResetWallClimbInformation(EMovementMode PrevMode, uint8 PrevCustomMode);
 
+	/** Reset's the wall climb duration using the wall climb interval */
+	virtual void ResetWallClimbInterval();
 	
 //------------------------------------------------------------------------------//
 // Mantle Logic																	//
@@ -1026,7 +1040,9 @@ public:
 	{
 	public:
 		typedef FCharacterNetworkMoveData Super;
-		FVector MoveData_InputAndTime;
+		FVector2D MoveData_Input;
+		FVector_NetQuantize10 MoveData_LedgeClimbLocation;
+		FVector_NetQuantize10 MoveData_MantleLocation;
 		
 		virtual void ClientFillNetworkMoveData(const FSavedMove_Character& ClientMove, ENetworkMoveType MoveType) override;
 		virtual bool Serialize(UCharacterMovementComponent& CharacterMovement, FArchive& Ar, UPackageMap* PackageMap, ENetworkMoveType MoveType) override;
@@ -1074,8 +1090,9 @@ public:
 			virtual void PrepMoveFor(ACharacter* Character) override;
 			
 			// Custom saved move information and Other values values we want to pass across the network
-			float Time;
 			FVector2D PlayerInput;
+			FVector_NetQuantize10 LedgeClimbLocation;
+			FVector_NetQuantize10 MantleLocation;
 		
 			// Without customizing the movement component these are the remaining flags for creating new functionality
 			uint8 SavedRequestToStartWallJumping : 1;
@@ -1110,14 +1127,16 @@ public:
 	UAdvancedMovementComponent();
 	friend class FMSavedMove;
 	FMCharacterNetworkMoveDataContainer CustomMoveDataContainer;
+	UPROPERTY(BlueprintReadWrite) float Time; // Replicating this across the server actually fixed some of the client calculations (in addition to the current logic), however I don't think that's safe 
 
 	// Custom movement information
 	UPROPERTY(BlueprintReadWrite) FVector2D PlayerInput; // VelocityOriented input values (Acceleration)
+	UPROPERTY(BlueprintReadWrite) FVector_NetQuantize10 Client_LedgeClimbLocation = FVector_NetQuantize10::ZeroVector;
+	UPROPERTY(BlueprintReadWrite) FVector_NetQuantize10 Client_MantleLocation = FVector_NetQuantize10::ZeroVector;
 	UPROPERTY(BlueprintReadWrite) uint8 WallJumpPressed : 1;
 	UPROPERTY(BlueprintReadWrite) uint8 AimPressed : 1;
 	UPROPERTY(BlueprintReadWrite) uint8 Mantling : 1;
 	UPROPERTY(BlueprintReadWrite) uint8 SprintPressed : 1;
-	UPROPERTY(BlueprintReadWrite) float Time;
 
 	
 	
@@ -1226,6 +1245,12 @@ public:
 	
 	/** Returns the previous wall jump time */
 	UFUNCTION(BlueprintCallable) virtual float GetPreviousWallJumpTime() const;
+
+	/** Returns the player's walk speed */
+	UFUNCTION(BlueprintCallable) virtual float GetMaxWalkSpeed() const;
+
+	/** Set's the player's walk speed. This isn't net relevant, and should only be used with ai */
+	UFUNCTION(BlueprintCallable) virtual void SetMaxWalkSpeed(float Speed);
 
 	
 //------------------------------------------------------------------------------//

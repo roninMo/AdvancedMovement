@@ -18,7 +18,14 @@ void ABhopCharacter::BeginPlay()
 	
 }
 
+
 UAdvancedMovementComponent* ABhopCharacter::GetAdvancedCharacterMovementComponent() const
 {
 	return GetMovementComp<UAdvancedMovementComponent>();
+}
+
+
+bool ABhopCharacter::CanJumpInternal_Implementation() const
+{
+	return JumpIsAllowedInternal();
 }
